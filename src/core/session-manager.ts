@@ -78,6 +78,7 @@ export class SessionManager {
   private readonly sessionLocks = new Map<string, Mutex>();
   private readonly activeTurns = new Map<string, ActiveTurn>();
   private admittedTurns = 0;
+  private shuttingDown = false;
 
   constructor(
     private readonly sessionStore: SessionStore,
@@ -110,7 +111,18 @@ export class SessionManager {
     return session;
   }
 
+  private assertAcceptingTurns(): void {
+    if (this.shuttingDown) {
+      throw new BridgeError(
+        "server_draining",
+        "Bridge is shutting down and is not accepting new turns",
+        true,
+      );
+    }
+  }
+
   private admitTurn(): () => void {
+    this.assertAcceptingTurns();
     const capacity = this.turnScheduler.snapshot();
     if (this.admittedTurns >= capacity.maxActive + capacity.maxQueued) {
       throw new BridgeError(
@@ -129,6 +141,7 @@ export class SessionManager {
   }
 
   async create(params: CreateSessionParams): Promise<SessionData> {
+    this.assertAcceptingTurns();
     const provider = this.providers[params.provider];
     if (!provider) {
       throw new BridgeError("provider_unavailable", `Provider ${params.provider} is not configured`, false);
@@ -186,10 +199,12 @@ export class SessionManager {
     if (ctx.signal?.aborted) {
       throw new BridgeError("client_cancelled", "Turn was cancelled before execution", false);
     }
+    this.assertAcceptingTurns();
 
-    const releaseAdmission = this.admitTurn();
+    // Resolve before admission so invalid session IDs cannot leak bounded-capacity accounting.
     const initialSession = await this.resolveSession(idOrName);
     const sessionId = initialSession.id;
+    const releaseAdmission = this.admitTurn();
     let unlock: (() => void) | undefined;
     let releaseCapacity: (() => void) | undefined;
     let turnId: string | undefined;
@@ -200,6 +215,7 @@ export class SessionManager {
       if (ctx.signal?.aborted) {
         throw new BridgeError("client_cancelled", "Turn was cancelled before provider execution", false);
       }
+      this.assertAcceptingTurns();
 
       const session = await this.resolveSession(sessionId);
       if (session.status === "closed" || session.status === "closing") {
@@ -219,6 +235,7 @@ export class SessionManager {
         request.source === "relay" ? "normal" : "interactive",
         ctx.signal,
       );
+      this.assertAcceptingTurns();
 
       const turnReq: BridgeTurnRequest = {
         ...request,
@@ -278,8 +295,6 @@ export class SessionManager {
         usageJson: result.usage ? JSON.stringify(result.usage) : undefined,
       });
 
-      // Only a completed provider turn becomes canonical session history. A failed or ambiguous
-      // turn is retained in the turn/audit record but never contaminates reconstruction history.
       if (result.status === "completed") {
         for (const message of currentMessages) {
           this.messageStore.create({
@@ -308,9 +323,7 @@ export class SessionManager {
       if (!turnId || active?.turnId === turnId) this.activeTurns.delete(sessionId);
 
       const latest = this.sessionStore.get(sessionId);
-      if (latest && latest.status !== "closed" && latest.status !== "closing" && latest.status === "busy") {
-        this.sessionStore.update(sessionId, { status: "ready" });
-      }
+      if (latest?.status === "busy") this.sessionStore.update(sessionId, { status: "ready" });
       releaseCapacity?.();
       unlock?.();
       releaseAdmission();
@@ -339,6 +352,31 @@ export class SessionManager {
       await active.provider.cancelTurn(session.id, active.turnId).catch(() => undefined);
     }
     return true;
+  }
+
+  async shutdown(timeoutMs = 10_000): Promise<void> {
+    this.shuttingDown = true;
+    const active = [...this.activeTurns.entries()];
+    await Promise.all(active.map(async ([sessionId, turn]) => {
+      if (!turn.controller.signal.aborted) {
+        turn.controller.abort(new DOMException("Bridge runtime is shutting down", "AbortError"));
+      }
+      if (turn.provider.cancelTurn) {
+        await turn.provider.cancelTurn(sessionId, turn.turnId).catch(() => undefined);
+      }
+    }));
+
+    const deadline = Date.now() + timeoutMs;
+    while (this.admittedTurns > 0 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    if (this.admittedTurns > 0) {
+      throw new BridgeError(
+        "shutdown_timeout",
+        `${this.admittedTurns} bridge turn(s) did not settle before shutdown timeout`,
+        false,
+      );
+    }
   }
 
   async close(idOrName: string): Promise<void> {
