@@ -27,6 +27,7 @@ function fixture(token?: string) {
       apiToken: token,
       defaultProvider: "fake",
       defaultModel: "fake-model",
+      listModels: async () => (await provider.capabilities()).models,
       turnStore,
     }),
   };
@@ -42,6 +43,21 @@ async function post(app: ReturnType<typeof createResponsesApi>, body: Record<str
     body: JSON.stringify(body),
   });
 }
+
+test("Responses API exposes an OpenAI-style model catalog", async () => {
+  const { app } = fixture();
+  const response = await app.request("/v1/models");
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({
+    object: "list",
+    data: [{
+      id: "fake-model",
+      object: "model",
+      created: 0,
+      owned_by: "agent-chatgpt-bridge",
+    }],
+  });
+});
 
 test("Responses API creates a response and continues via previous_response_id", async () => {
   const { app, sm } = fixture();
@@ -103,11 +119,14 @@ test("Responses API enforces local bearer authentication", async () => {
   const denied = await post(app, { model: "fake-model", input: "hello" });
   expect(denied.status).toBe(401);
 
+  const deniedModels = await app.request("/v1/models");
+  expect(deniedModels.status).toBe(401);
+
   const allowed = await post(app, { model: "fake-model", input: "hello" }, "responses-secret");
   expect(allowed.status).toBe(200);
 });
 
-test("Responses API accepts instructions and JSON schema output contract", async () => {
+test("Responses API treats instructions as turn-scoped while accepting JSON schema output", async () => {
   const { app, sm } = fixture();
   const response = await post(app, {
     model: "fake-model",
@@ -124,8 +143,9 @@ test("Responses API accepts instructions and JSON schema output contract", async
   expect(response.status).toBe(200);
   const sessions = await sm.list();
   const transcript = await sm.transcript(sessions[0]!.id);
-  expect(transcript[0]!.role).toBe("system");
-  expect(transcript[1]!.role).toBe("user");
+  expect(transcript.map(message => message.role)).toEqual(["user", "assistant"]);
+  expect(transcript.some(message => message.content.some(part => part.type === "text" && part.text.includes("structured output"))))
+    .toBe(false);
 });
 
 test("Responses API rejects unsupported tool execution rather than ignoring it", async () => {
