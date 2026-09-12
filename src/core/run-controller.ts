@@ -26,17 +26,18 @@ function positiveFinite(name: string, value: number): number {
 }
 
 function agentTranscript(messages: BridgeMessage[]): AgentTurnInput["transcript"] {
-  return messages.flatMap(message => {
+  const transcript: NonNullable<AgentTurnInput["transcript"]> = [];
+  for (const message of messages) {
     const text = message.content
       .filter(part => part.type === "text")
       .map(part => part.text)
       .join("\n")
       .trim();
-    if (!text) return [];
-    if (message.role === "assistant") return [{ speaker: "chatgpt" as const, text }];
-    if (message.role === "user") return [{ speaker: "agent" as const, text }];
-    return [];
-  });
+    if (!text) continue;
+    if (message.role === "assistant") transcript.push({ speaker: "chatgpt", text });
+    else if (message.role === "user") transcript.push({ speaker: "agent", text });
+  }
+  return transcript;
 }
 
 function retryableError(error: unknown): boolean {
