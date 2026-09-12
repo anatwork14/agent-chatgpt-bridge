@@ -31,12 +31,15 @@ Last updated: 2026-09-12
 - Codex-router cancellation, explicit rate-limit/error mapping, and capability-URL redaction.
 - Canonical bridge history preserved across multi-turn codex-router sessions.
 - Real child-process bridge integration test covering CLI/server/auth/model discovery/two routed turns/history/shutdown.
-- Three-OS CI fully green on the child-process integration head (`b905273`).
+- Codex-router SSE parser hardened for CRLF frame delimiters split across transport chunks, with regression coverage.
+- Pinned real codex-router process integration added to CI.
+- CI run #141 fully green on macOS 15, Ubuntu latest, and Windows latest at `367844d`.
 - Native launcher packaging and packaged-app smoke green on macOS, Ubuntu, and Windows.
+- Live bridge-level codex-router verifier added for real routed continuity, transcript persistence, model pinning, capability leak detection, optional cancellation, and optional ChatGPT Web coexistence.
 
 ## Deterministic validation status
 
-The latest CI matrix validates all deterministic gates on macOS, Ubuntu, and Windows:
+CI run #141 validated the P1 deterministic gates on macOS, Ubuntu, and Windows:
 
 ```text
 [x] typecheck
@@ -46,9 +49,16 @@ The latest CI matrix validates all deterministic gates on macOS, Ubuntu, and Win
 [x] native launcher packaging
 [x] packaged-app smoke
 [x] child-process codex-router bridge integration
+[x] pinned real codex-router process integration
+[x] CRLF split-boundary SSE regression
 ```
 
-The codex-router deterministic integration uses a real `agent-chatgpt serve` child process and a local deterministic HTTP/SSE router peer. It verifies:
+The deterministic codex-router coverage now includes two complementary paths:
+
+1. a real `agent-chatgpt serve` child process with a deterministic local HTTP/SSE router peer, verifying public bridge surfaces and canonical history ownership;
+2. a pinned real codex-router process with a deterministic fake upstream, verifying the actual router transport boundary without requiring external provider credentials.
+
+Together they verify:
 
 - authenticated bridge startup;
 - combined `chatgpt-web/...` + `codex-router/...` model discovery;
@@ -56,6 +66,9 @@ The codex-router deterministic integration uses a real `agent-chatgpt serve` chi
 - two routed CLI turns;
 - canonical persisted history replay on the second turn;
 - no provider/model migration;
+- Responses streaming translation;
+- split CRLF framing across transport chunks;
+- real codex-router model discovery and routed request transport;
 - authenticated bridge shutdown and process cleanup.
 
 ## Live validation still required
@@ -79,15 +92,29 @@ These cannot be honestly proven by fake-provider or deterministic CI alone:
 - coexistence with an independent ChatGPT Web session
 - downstream cancellation against a genuinely long-running routed request
 - real 429/provider-error propagation when safely reproducible
-- confirmation that caller-capability URL material never appears in logs/errors
+- confirmation that caller-capability URL material never appears in live bridge responses/errors
+
+The live codex-router work is now substantially automated by:
+
+```sh
+bun run smoke:codex-router
+bun run smoke:codex-router:bridge
+```
+
+Optional real cancellation and ChatGPT Web coexistence checks are enabled with:
+
+```sh
+AGENT_CHATGPT_CODEX_ROUTER_SMOKE_CANCEL=1
+AGENT_CHATGPT_CODEX_ROUTER_SMOKE_CHATGPT=1
+```
 
 See `docs/release-validation-agent-bridge.md` and `docs/CODEX_ROUTER_SMOKE.md`.
 
 ## Remaining hardening
 
-- Harden the codex-router SSE parser for a CRLF delimiter split exactly across transport chunks, with a regression test.
-- Run the complete three-OS matrix again after that parser-only change.
-- Perform the live validation checklist above before calling the release fully proven.
+- Run the current branch CI after the new live-verifier tooling changes.
+- Perform the live validation checklist above before calling P1 fully proven.
+- Keep real provider-side 429 validation conditional on a safe test mechanism; deterministic mapping/no-fallback coverage already exists and paid-account exhaustion must not be used as a test strategy.
 
 ## Known design note
 
@@ -114,9 +141,10 @@ The generic `agent-chatgpt serve` composition currently owns its local bridge li
 [x] codex-router model namespace/discovery
 [x] codex-router two-turn canonical-history integration
 [x] child-process bridge/router integration test
-[x] latest three-OS CI fully green
-[x] package/smoke stages green on latest validated head
-[ ] codex-router CRLF split-boundary parser regression fixed
+[x] pinned real codex-router process integration
+[x] codex-router CRLF split-boundary parser regression fixed
+[x] latest validated three-OS CI fully green
+[x] package/smoke stages green on latest validated runtime head
 [ ] live authenticated persistent-session test
 [ ] live MCP test
 [ ] live autonomous two-round test
