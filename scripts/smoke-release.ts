@@ -55,6 +55,28 @@ if (version.exitCode !== 0 || version.stdout.toString().trim() !== VERSION) {
   throw new Error(`Relocated launcher failed: ${version.stderr.toString()}`);
 }
 
+const bridgeEntrypointRelative = "app/agent-chatgpt.js";
+const bridgeLauncherRelative = `bin/${process.platform === "win32" ? "agent-chatgpt.cmd" : "agent-chatgpt"}`;
+const declaredFiles = new Set((manifest.files as Array<{ path?: unknown }>).map(file => String(file.path ?? "")));
+for (const required of [bridgeEntrypointRelative, bridgeLauncherRelative]) {
+  if (!declaredFiles.has(required)) {
+    throw new Error(`Runtime manifest does not declare packaged bridge file: ${required}`);
+  }
+}
+const bridgeEntrypoint = join(runtimeRoot, ...bridgeEntrypointRelative.split("/"));
+const bridgeLauncher = join(runtimeRoot, ...bridgeLauncherRelative.split("/"));
+const bridgeLauncherText = readFileSync(bridgeLauncher, "utf8");
+if (!bridgeLauncherText.includes("agent-chatgpt.js")) {
+  throw new Error("Packaged agent-chatgpt launcher does not target its dedicated runtime entrypoint");
+}
+const bridgeHelp = Bun.spawnSync([runtimeExecutable, bridgeEntrypoint, "--help"], {
+  stdout: "pipe",
+  stderr: "pipe",
+});
+if (bridgeHelp.exitCode !== 0 || !bridgeHelp.stdout.toString().includes("Universal Agent -> ChatGPT Web bridge.")) {
+  throw new Error(`Packaged agent-chatgpt CLI failed its help smoke: ${bridgeHelp.stderr.toString()}`);
+}
+
 const appHome = join(root, "app-state");
 const codexHome = join(root, "codex");
 mkdirSync(join(appHome, "browser"), { recursive: true });

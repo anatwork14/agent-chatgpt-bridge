@@ -53,8 +53,8 @@ mkdirSync(appDir, { recursive: true });
 mkdirSync(runtimeDir, { recursive: true });
 mkdirSync(binDir, { recursive: true });
 
-const build = await Bun.build({
-  entrypoints: [join(root, "src", "cli.ts"), join(root, "src", "cli", "index.ts")],
+const legacyCliBuild = await Bun.build({
+  entrypoints: [join(root, "src", "cli.ts")],
   target: "bun",
   minify: true,
   external: ["playwright-core"],
@@ -62,8 +62,21 @@ const build = await Bun.build({
   outdir: appDir,
   naming: "cli.js",
 });
-if (!build.success) {
-  throw new Error(`Runtime bundle failed: ${build.logs.map(log => log.message).join("; ")}`);
+if (!legacyCliBuild.success) {
+  throw new Error(`Legacy CLI runtime bundle failed: ${legacyCliBuild.logs.map(log => log.message).join("; ")}`);
+}
+
+const bridgeCliBuild = await Bun.build({
+  entrypoints: [join(root, "src", "cli", "index.ts")],
+  target: "bun",
+  minify: true,
+  external: ["playwright-core"],
+  packages: "external",
+  outdir: appDir,
+  naming: "agent-chatgpt.js",
+});
+if (!bridgeCliBuild.success) {
+  throw new Error(`Bridge CLI runtime bundle failed: ${bridgeCliBuild.logs.map(log => log.message).join("; ")}`);
 }
 
 const browserHelperBuild = await Bun.build({
@@ -94,7 +107,7 @@ const bunName = process.platform === "win32" ? "bun.exe" : "bun";
 cpSync(embeddedBunExecutable(), join(runtimeDir, bunName));
 if (process.platform !== "win32") chmodSync(join(runtimeDir, bunName), 0o755);
 
-const launcherName = process.platform === "win32" ? "codex-chatgpt-web.cmd" : "codex-chatgpt-web";
+const launcherName = process.platform === "win32" ? "agent-chatgpt-bridge.cmd" : "agent-chatgpt-bridge";
 const launcher = process.platform === "win32" ? `@echo off
 setlocal
 chcp 65001 >nul
@@ -123,6 +136,34 @@ exec "$root/runtime/bun" "$root/app/cli.js" "$@"
 `;
 writeFileSync(join(binDir, launcherName), launcher, process.platform === "win32" ? undefined : { mode: 0o755 });
 if (process.platform !== "win32") chmodSync(join(binDir, launcherName), 0o755);
+
+const bridgeLauncherName = process.platform === "win32" ? "agent-chatgpt.cmd" : "agent-chatgpt";
+const bridgeLauncher = process.platform === "win32" ? `@echo off
+setlocal
+chcp 65001 >nul
+set "ROOT=%~dp0.."
+"%ROOT%\\runtime\\bun.exe" "%ROOT%\\app\\agent-chatgpt.js" %*
+` : `#!/bin/sh
+set -eu
+invoked="$0"
+case "$invoked" in
+  /*) ;;
+  *) invoked="$(command -v -- "$invoked")" ;;
+esac
+script="$invoked"
+while [ -L "$script" ]; do
+  target="$(readlink "$script")"
+  case "$target" in
+    /*) script="$target" ;;
+    *) script="$(dirname "$script")/$target" ;;
+  esac
+done
+bin_dir="$(CDPATH= cd -- "$(dirname "$script")" && pwd -P)"
+root="$(CDPATH= cd -- "$bin_dir/.." && pwd -P)"
+exec "$root/runtime/bun" "$root/app/agent-chatgpt.js" "$@"
+`;
+writeFileSync(join(binDir, bridgeLauncherName), bridgeLauncher, process.platform === "win32" ? undefined : { mode: 0o755 });
+if (process.platform !== "win32") chmodSync(join(binDir, bridgeLauncherName), 0o755);
 
 const notices = Bun.spawnSync([
   process.execPath,

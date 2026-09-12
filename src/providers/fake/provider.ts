@@ -1,7 +1,6 @@
 import type { ConversationProvider, ProviderCapabilities } from "../provider";
 import type { BridgeTurnRequest, BridgeTurnResult } from "../../core/domain";
 import type { BridgeEvent } from "../../core/events";
-import { generateTurnId } from "../../core/ids";
 
 export class FakeConversationProvider implements ConversationProvider {
   public readonly name = "fake";
@@ -21,7 +20,9 @@ export class FakeConversationProvider implements ConversationProvider {
       emit(event: BridgeEvent): void;
     }
   ): Promise<BridgeTurnResult> {
-    const turnId = generateTurnId();
+    // SessionManager owns logical turn identity. Test providers must obey the same contract as
+    // production providers so persistence, cancellation, and protocol continuation tests are real.
+    const turnId = request.requestId;
     ctx.emit({ type: "turn.started", sessionId: request.sessionId, turnId });
 
     const text = "This is a fake response.";
@@ -34,9 +35,9 @@ export class FakeConversationProvider implements ConversationProvider {
       status: "completed",
       text,
     };
-    
+
     ctx.emit({ type: "turn.completed", sessionId: request.sessionId, turnId, result });
-    
+
     return result;
   }
 }
