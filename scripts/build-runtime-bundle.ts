@@ -60,7 +60,7 @@ const build = await Bun.build({
   external: ["playwright-core"],
   packages: "external",
   outdir: appDir,
-  naming: "cli.js",
+  naming: "[dir]/[name].js",
 });
 if (!build.success) {
   throw new Error(`Runtime bundle failed: ${build.logs.map(log => log.message).join("; ")}`);
