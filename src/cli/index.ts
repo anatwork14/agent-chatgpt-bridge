@@ -6,6 +6,7 @@ import {
   createBridgeRuntime,
   resolveBridgePort,
 } from "../runtime/bridge-runtime";
+import { composePrompt } from "./prompt";
 
 const HELP = `agent-chatgpt
 
@@ -21,9 +22,11 @@ Usage:
   agent-chatgpt session show SESSION [--json]
   agent-chatgpt session transcript SESSION [--json]
   agent-chatgpt session close SESSION [--json]
-  agent-chatgpt ask [--session SESSION] [--stdin] [--quiet-session] [--json] [MESSAGE]
+  agent-chatgpt ask [--session SESSION] [--stdin] [--prompt-prefix TEXT]
+                    [--quiet-session] [--json] [MESSAGE]
   agent-chatgpt run --objective TEXT --agent-command PATH [--session SESSION]
                     [--max-rounds N] [--max-wall-clock-ms N] [--json]
+  agent-chatgpt run list [--json]
   agent-chatgpt run show RUN_ID [--json]
   agent-chatgpt run cancel RUN_ID [--json]
 
@@ -220,10 +223,13 @@ async function sessionCommand(args: string[], client: ClientConfig, json: boolea
 
 async function askCommand(args: string[], client: ClientConfig, json: boolean): Promise<void> {
   let sessionId = takeOption(args, "--session");
+  const promptPrefix = takeOption(args, "--prompt-prefix");
   const fromStdin = takeFlag(args, "--stdin");
   const quietSession = takeFlag(args, "--quiet-session");
-  const prompt = fromStdin ? await readStdin() : args.join(" ").trim();
-  if (!prompt) throw new Error("ask requires MESSAGE or --stdin");
+  const message = fromStdin ? await readStdin() : args.join(" ").trim();
+  if (fromStdin) assertNoArgs(args);
+  const prompt = composePrompt(message, promptPrefix);
+  if (!prompt.trim()) throw new Error("ask requires MESSAGE, --stdin, or --prompt-prefix");
 
   if (!sessionId) {
     const session = await requestJson(client, "/sessions", {
@@ -255,6 +261,12 @@ async function askCommand(args: string[], client: ClientConfig, json: boolean): 
 
 async function runCommand(args: string[], client: ClientConfig, json: boolean): Promise<void> {
   const action = args[0];
+  if (action === "list") {
+    args.shift();
+    assertNoArgs(args);
+    print(await requestJson(client, "/runs"), json);
+    return;
+  }
   if (action === "show" || action === "cancel") {
     args.shift();
     const runId = args.shift();
