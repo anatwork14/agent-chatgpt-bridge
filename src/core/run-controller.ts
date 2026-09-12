@@ -190,7 +190,8 @@ export class RunController {
   ): Promise<AgentDecision> {
     const controller = new AbortController();
     const onParentAbort = () => controller.abort(parentSignal.reason);
-    parentSignal.addEventListener("abort", onParentAbort, { once: true });
+    if (parentSignal.aborted) controller.abort(parentSignal.reason);
+    else parentSignal.addEventListener("abort", onParentAbort, { once: true });
     const timeout = setTimeout(
       () => controller.abort(new DOMException("Collaboration run wall-clock budget exhausted", "TimeoutError")),
       Math.max(1, remainingMs),
@@ -346,7 +347,8 @@ export class RunController {
 
         const chatController = new AbortController();
         const onRunAbort = () => chatController.abort(signal.reason);
-        signal.addEventListener("abort", onRunAbort, { once: true });
+        if (signal.aborted) chatController.abort(signal.reason);
+        else signal.addEventListener("abort", onRunAbort, { once: true });
         const chatTimeout = setTimeout(
           () => chatController.abort(new DOMException("Collaboration run wall-clock budget exhausted", "TimeoutError")),
           Math.max(1, chatRemaining),
