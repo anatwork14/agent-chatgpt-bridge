@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { stdin, stdout } from "node:process";
 import { loadConfig } from "../config";
 import {
@@ -17,6 +19,9 @@ Usage:
   agent-chatgpt stop [--json]
   agent-chatgpt status [--json]
   agent-chatgpt models [--json]
+  agent-chatgpt login
+  agent-chatgpt doctor [--json]
+  agent-chatgpt browser-smoke
   agent-chatgpt mcp
   agent-chatgpt session create [--name NAME] [--model MODEL] [--effort EFFORT] [--json]
   agent-chatgpt session list [--json]
@@ -79,6 +84,31 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+function legacyCliEntrypoint(): string {
+  const current = process.argv[1];
+  if (!current) throw new Error("Could not resolve the agent-chatgpt runtime entrypoint");
+  const currentDir = dirname(resolve(current));
+
+  const packaged = join(currentDir, "cli.js");
+  if (existsSync(packaged)) return packaged;
+
+  const source = resolve(currentDir, "..", "cli.ts");
+  if (existsSync(source)) return source;
+
+  throw new Error("Could not locate the inherited codex-chatgpt-web CLI runtime");
+}
+
+async function runLegacyCli(args: string[]): Promise<void> {
+  const child = Bun.spawn([process.execPath, legacyCliEntrypoint(), ...args], {
+    env: process.env,
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const exitCode = await child.exited;
+  if (exitCode !== 0) process.exitCode = exitCode;
+}
+
 function clientConfig(portOverride?: number): ClientConfig {
   const config = loadConfig();
   const port = resolveBridgePort(portOverride);
@@ -124,8 +154,8 @@ function print(value: unknown, json: boolean): void {
 async function serveCommand(portOverride?: number): Promise<void> {
   const config = loadConfig();
   let requestStop!: () => void;
-  const stopRequested = new Promise<void>(resolve => {
-    requestStop = resolve;
+  const stopRequested = new Promise<void>(resolveStop => {
+    requestStop = resolveStop;
   });
   const runtime = await createBridgeRuntime(config, {
     port: portOverride,
@@ -323,6 +353,21 @@ async function main(): Promise<void> {
   if (command === "serve") {
     assertNoArgs(args);
     await serveCommand(portOverride);
+    return;
+  }
+  if (command === "login") {
+    assertNoArgs(args);
+    await runLegacyCli(["login"]);
+    return;
+  }
+  if (command === "doctor") {
+    assertNoArgs(args);
+    await runLegacyCli(["doctor", ...(json ? ["--json"] : [])]);
+    return;
+  }
+  if (command === "browser-smoke") {
+    assertNoArgs(args);
+    await runLegacyCli(["browser", "check"]);
     return;
   }
   if (command === "mcp") {
