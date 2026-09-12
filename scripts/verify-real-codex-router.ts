@@ -6,7 +6,10 @@ import { CodexRouterConversationProvider } from "../src/providers/codex-router/p
 
 const CALLER_KEY = "bridge_ci_caller_capability_0123456789abcdef";
 const INTERNAL_KEY = "bridge_ci_internal_capability_0123456789abcdef";
-const ROUTED_MODEL = "codex-router/deepseek/deepseek-v4-pro";
+// This is the pinned router's current direct DeepSeek Responses route and is covered by
+// codex-router's own deepseek-responses-routing.test.mjs fixture.
+const ROUTED_MODEL = "codex-router/deepseek/deepseek-v4.1-flash";
+const UPSTREAM_MODEL = "deepseek-flash";
 
 function invariant(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -33,7 +36,8 @@ async function availablePort(): Promise<number> {
 function redact(value: string): string {
   return value
     .split(CALLER_KEY).join("[REDACTED_CALLER_CAPABILITY]")
-    .split(INTERNAL_KEY).join("[REDACTED_INTERNAL_CAPABILITY]");
+    .split(INTERNAL_KEY).join("[REDACTED_INTERNAL_CAPABILITY]")
+    .split("bridge-ci-local-test-key").join("[REDACTED_TEST_KEY]");
 }
 
 async function stopChild(child: Bun.Subprocess): Promise<void> {
@@ -73,15 +77,14 @@ const nodeBinary = process.env.CODEX_ROUTER_NODE?.trim() || Bun.which("node");
 invariant(nodeBinary, "Node.js is required to launch the real codex-router fixture");
 
 const stateDir = mkdtempSync(join(tmpdir(), "agent-chatgpt-real-router-state-"));
-// Mirror codex-router's own catalog/setup tests: routed models are exposed only when the
-// provider is explicitly enabled and has an available credential. The key is a CI-only fixture
-// consumed solely by the local mock gateway path; no external provider traffic is possible here.
+// Keep explicit provider policy on disk just like a real installation. The environment key below
+// mirrors codex-router's own direct DeepSeek routing fixture and prevents platform/keychain
+// discovery from affecting CI.
 writeFileSync(
   join(stateDir, "enabled-providers.json"),
   `${JSON.stringify({ version: 1, providers: ["deepseek"] })}\n`,
   { mode: 0o600 },
 );
-writeFileSync(join(stateDir, "deepseek-api-key.secret"), "bridge-ci-local-test-key\n", { mode: 0o600 });
 
 const upstreamBodies: any[] = [];
 const upstreamPaths: string[] = [];
@@ -94,7 +97,7 @@ const gateway = Bun.serve({
     if (url.pathname === "/health") {
       return Response.json({ ok: true });
     }
-    if (request.method === "POST" && url.pathname === "/v1/responses") {
+    if (request.method === "POST" && (url.pathname === "/responses" || url.pathname === "/v1/responses")) {
       const body = await request.json() as any;
       upstreamBodies.push(body);
       upstreamPaths.push(url.pathname);
@@ -128,6 +131,7 @@ const gateway = Bun.serve({
           sequence_number: 3,
           response: {
             id: responseId,
+            object: "response",
             status: "completed",
             output: [{
               id: messageId,
@@ -159,6 +163,7 @@ const child = Bun.spawn([nodeBinary, routerEntry], {
   env: {
     ...process.env,
     MODEL_ROUTER_STATE_DIR: stateDir,
+    CODEX_ROUTER_STATE_DIR: stateDir,
     CODEX_ROUTER_CALLER_KEY: CALLER_KEY,
     CODEX_ROUTER_INTERNAL_KEY: INTERNAL_KEY,
     KIMI_INTERNAL_KEY: INTERNAL_KEY,
@@ -170,6 +175,8 @@ const child = Bun.spawn([nodeBinary, routerEntry], {
     CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
     CODEX_ROUTER_GROK_OAUTH_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
     CODEX_ROUTER_GATEWAY_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    DEEPSEEK_API_BASE_URL: `http://127.0.0.1:${gateway.port}`,
+    DEEPSEEK_API_KEY: "bridge-ci-local-test-key",
   },
   stdin: "ignore",
   stdout: "ignore",
@@ -185,7 +192,7 @@ try {
   const capabilities = await provider.capabilities();
   invariant(
     capabilities.models.includes(ROUTED_MODEL),
-    `Pinned codex-router did not expose required fixture model ${ROUTED_MODEL}`,
+    `Pinned codex-router did not expose required fixture model ${ROUTED_MODEL}; exposed=${capabilities.models.slice(0, 20).join(",")}`,
   );
 
   const events: string[] = [];
@@ -207,15 +214,18 @@ try {
     },
   });
 
-  invariant(result.status === "completed", `Real codex-router turn ended as ${result.status}`);
+  invariant(result.status === "completed", `Real codex-router turn ended as ${result.status}: ${result.error?.code ?? "no-error-code"}`);
   invariant(result.text === "real codex-router integration ok", `Unexpected routed text: ${result.text}`);
   invariant(result.usage?.totalTokens === 11, "Real codex-router usage did not propagate");
   invariant(events.includes("text.delta"), "Real codex-router stream emitted no text.delta event");
   invariant(events.at(-1) === "turn.completed", "Real codex-router stream emitted no terminal completion");
   invariant(upstreamBodies.length === 1, `Expected one upstream turn, received ${upstreamBodies.length}`);
-  invariant(upstreamPaths[0] === "/v1/responses", `Unexpected codex-router upstream path: ${upstreamPaths[0]}`);
   invariant(
-    upstreamBodies[0]?.model === "deepseek/deepseek-v4-pro",
+    upstreamPaths[0] === "/responses" || upstreamPaths[0] === "/v1/responses",
+    `Unexpected codex-router upstream path: ${upstreamPaths[0]}`,
+  );
+  invariant(
+    upstreamBodies[0]?.model === UPSTREAM_MODEL,
     `Unexpected upstream model: ${String(upstreamBodies[0]?.model)}`,
   );
 
