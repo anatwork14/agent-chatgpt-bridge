@@ -3,8 +3,9 @@ import type { Hono } from "hono";
 import type { AppConfig } from "../config";
 import { providerConfig } from "../config";
 import { SubprocessJsonlAdapter } from "../agents/subprocess-jsonl";
+import { closeChatGptBrowserWorkers } from "../adapters/chatgpt-web/browser-worker";
 import { AuditStore } from "../persistence/audit-store";
-import { initDatabase } from "../persistence/database";
+import { closeDatabase, initDatabase } from "../persistence/database";
 import { MessageStore } from "../persistence/message-store";
 import { RunStore } from "../persistence/run-store";
 import { SessionStore } from "../persistence/session-store";
@@ -32,6 +33,7 @@ export interface BridgeRuntime {
   port: number;
   baseUrl: string;
   recoveredInterruptedTurns: number;
+  close(): Promise<void>;
 }
 
 export interface BridgeRuntimeDependencies {
@@ -134,6 +136,27 @@ export async function createBridgeRuntime(
     listModels: async () => [...(await provider.capabilities()).models],
   });
 
+  let closed = false;
+  const close = async (): Promise<void> => {
+    if (closed) return;
+    closed = true;
+    const results = await Promise.allSettled([
+      runController.cancelAllRuns(),
+      sessionManager.shutdown(),
+    ]);
+    const cleanup = await Promise.allSettled([
+      closeChatGptBrowserWorkers(),
+    ]);
+    closeDatabase();
+
+    const failures = [...results, ...cleanup]
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map(result => result.reason);
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Bridge runtime shutdown did not settle cleanly");
+    }
+  };
+
   return {
     provider,
     sessionManager,
@@ -147,5 +170,6 @@ export async function createBridgeRuntime(
     port,
     baseUrl: `http://${host}:${port}/bridge/v1`,
     recoveredInterruptedTurns,
+    close,
   };
 }
