@@ -53,17 +53,30 @@ mkdirSync(appDir, { recursive: true });
 mkdirSync(runtimeDir, { recursive: true });
 mkdirSync(binDir, { recursive: true });
 
-const build = await Bun.build({
-  entrypoints: [join(root, "src", "cli.ts"), join(root, "src", "cli", "index.ts")],
+const legacyCliBuild = await Bun.build({
+  entrypoints: [join(root, "src", "cli.ts")],
   target: "bun",
   minify: true,
   external: ["playwright-core"],
   packages: "external",
   outdir: appDir,
-  naming: "[dir]/[name].js",
+  naming: "cli.js",
 });
-if (!build.success) {
-  throw new Error(`Runtime bundle failed: ${build.logs.map(log => log.message).join("; ")}`);
+if (!legacyCliBuild.success) {
+  throw new Error(`Legacy CLI runtime bundle failed: ${legacyCliBuild.logs.map(log => log.message).join("; ")}`);
+}
+
+const bridgeCliBuild = await Bun.build({
+  entrypoints: [join(root, "src", "cli", "index.ts")],
+  target: "bun",
+  minify: true,
+  external: ["playwright-core"],
+  packages: "external",
+  outdir: appDir,
+  naming: "agent-chatgpt.js",
+});
+if (!bridgeCliBuild.success) {
+  throw new Error(`Bridge CLI runtime bundle failed: ${bridgeCliBuild.logs.map(log => log.message).join("; ")}`);
 }
 
 const browserHelperBuild = await Bun.build({
