@@ -127,11 +127,12 @@ export async function createBridgeRuntime(
   const apiToken = dependencies.apiToken ?? bridgeApiToken(config);
   const port = resolveBridgePort(dependencies.port);
   const host = "127.0.0.1" as const;
+  const listModels = async () => [...(await provider.capabilities()).models];
   const bridgeApi = createBridgeApi(sessionManager, {
     apiToken,
     defaultProvider: provider.name,
     defaultModel,
-    listModels: async () => [...(await provider.capabilities()).models],
+    listModels,
     runController,
     listRuns: () => runStore.list(),
     requestShutdown: dependencies.requestShutdown,
@@ -140,6 +141,7 @@ export async function createBridgeRuntime(
     apiToken,
     defaultProvider: provider.name,
     defaultModel,
+    listModels,
     turnStore,
   });
   const api = new Hono();
@@ -149,7 +151,7 @@ export async function createBridgeRuntime(
   const mcp = new AgentChatGptMcpServer(sessionManager, {
     defaultProvider: provider.name,
     defaultModel,
-    listModels: async () => [...(await provider.capabilities()).models],
+    listModels,
   });
 
   let closed = false;
