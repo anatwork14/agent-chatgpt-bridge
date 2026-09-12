@@ -1,7 +1,6 @@
 import type { ConversationProvider, ProviderCapabilities } from "../provider";
 import type { BridgeTurnRequest, BridgeTurnResult, BridgeUsage } from "../../core/domain";
 import type { BridgeEvent } from "../../core/events";
-import { generateTurnId } from "../../core/ids";
 import { bridgeTurnRequestToCodexParsedRequest } from "../../compatibility/codex/backward";
 import { createChatGptWebAdapter } from "../../adapters/chatgpt-web";
 import {
@@ -46,9 +45,10 @@ export class ChatGPTWebConversationProvider implements ConversationProvider {
   }
 
   async capabilities(): Promise<ProviderCapabilities> {
-    const routes = availableChatGptWebModelRoutes(this.accountCapabilities());
+    const capabilities = this.accountCapabilities();
+    const routes = availableChatGptWebModelRoutes(capabilities);
     return {
-      supportsImages: this.accountCapabilities().browserInteractionMode !== "manual",
+      supportsImages: capabilities.browserInteractionMode !== "manual",
       supportsTools: this.config.chatgptWeb?.localToolsEnabled === true,
       models: routes.map(route => route.slug),
     };
@@ -76,7 +76,9 @@ export class ChatGPTWebConversationProvider implements ConversationProvider {
   ): Promise<BridgeTurnResult> {
     const normalized = this.normalizeRequest(request);
     const parsed = bridgeTurnRequestToCodexParsedRequest(normalized);
-    const turnId = generateTurnId();
+    // The session manager owns the logical turn id. Keeping provider and persistence identity
+    // identical makes cancellation/idempotency deterministic across protocol surfaces.
+    const turnId = request.requestId;
 
     let terminalSeen = false;
     let activeTool: { id: string; name: string; arguments: string } | undefined;
