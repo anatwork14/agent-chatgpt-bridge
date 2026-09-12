@@ -14,7 +14,8 @@
   "packageManager": "bun@1.4.0",
   "type": "module",
   "bin": {
-    "codex-chatgpt-web": "./src/cli.ts", "agent-chatgpt": "./src/cli/index.ts"
+    "codex-chatgpt-web": "./src/cli.ts",
+    "agent-chatgpt": "./src/cli/index.ts"
   },
   "files": [
     "dist",
@@ -28,7 +29,7 @@
     "doctor": "bun run src/cli.ts doctor",
     "dev:launcher": "bun run src/cli.ts dev launcher",
     "dev:chat": "bun run src/cli.ts dev chat",
-    "test": "bun test ./tests",
+    "test": "bun test ./tests ./src",
     "audit": "bun audit",
     "check-version": "bun run scripts/check-version.ts",
     "typecheck": "bun x --no-install --bun tsc --noEmit",
