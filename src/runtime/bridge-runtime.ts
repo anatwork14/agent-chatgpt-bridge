@@ -40,6 +40,7 @@ export interface BridgeRuntimeDependencies {
   provider?: ConversationProvider;
   port?: number;
   apiToken?: string;
+  requestShutdown?: () => void;
 }
 
 export function bridgeApiToken(config: Pick<AppConfig, "controlToken">): string {
@@ -131,6 +132,7 @@ export async function createBridgeRuntime(
     listModels: async () => [...(await provider.capabilities()).models],
     runController,
     listRuns: () => runStore.list(),
+    requestShutdown: dependencies.requestShutdown,
   });
   const mcp = new AgentChatGptMcpServer(sessionManager, {
     defaultProvider: provider.name,
