@@ -178,7 +178,7 @@ test("live bridge codex-router smoke verifies routed continuity through public R
   });
 
   try {
-    const result = await runSmoke(home, bridge.port);
+    const result = await runSmoke(home, bridge.port!);
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("LIVE_BRIDGE_CODEX_ROUTER_SMOKE_OK");
@@ -262,7 +262,7 @@ test("live bridge smoke exercises optional cancellation and ChatGPT Web coexiste
   });
 
   try {
-    const result = await runSmoke(home, bridge.port, {
+    const result = await runSmoke(home, bridge.port!, {
       AGENT_CHATGPT_CODEX_ROUTER_SMOKE_CANCEL: "1",
       AGENT_CHATGPT_CODEX_ROUTER_SMOKE_CANCEL_DELAY_MS: "20",
       AGENT_CHATGPT_CODEX_ROUTER_SMOKE_CANCEL_PROMPT: "HOLD_FOR_CANCELLATION",
@@ -308,7 +308,7 @@ test("live bridge smoke fails closed without printing capability material from a
   });
 
   try {
-    const result = await runSmoke(home, bridge.port);
+    const result = await runSmoke(home, bridge.port!);
     expect(result.exitCode).not.toBe(0);
     expect(result.stdout).not.toContain(ROUTER_SECRET);
     expect(result.stderr).not.toContain(ROUTER_SECRET);
