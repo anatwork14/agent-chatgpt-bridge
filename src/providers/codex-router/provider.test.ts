@@ -39,6 +39,20 @@ function sseResponse(frames: Array<{ event: string; data: unknown }>): Response 
   });
 }
 
+function chunkedSseResponse(chunks: string[]): Response {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+  return new Response(body, {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
 test("Codex Router provider discovers namespaced models", async () => {
   let requestedUrl = "";
   const fetchImpl = (async (input: RequestInfo | URL) => {
@@ -117,6 +131,48 @@ test("Codex Router provider translates Responses SSE into bridge events", async 
   expect(events.map(event => event.type)).toEqual([
     "turn.started",
     "text.delta",
+    "text.delta",
+    "turn.completed",
+  ]);
+});
+
+test("Codex Router provider preserves CRLF frame boundaries split across transport chunks", async () => {
+  const delta = JSON.stringify({ type: "response.output_text.delta", delta: "chunk-safe" });
+  const completed = JSON.stringify({
+    type: "response.completed",
+    response: {
+      id: "resp_router_split_crlf",
+      status: "completed",
+      output: [],
+      usage: { input_tokens: 3, output_tokens: 1, total_tokens: 4 },
+    },
+  });
+  const chunks = [
+    "event: response.output_text.delta\r",
+    `\ndata: ${delta}\r`,
+    "\n\r",
+    "\nevent: response.completed\r",
+    `\ndata: ${completed}\r`,
+    "\n\r",
+    "\ndata: [DONE]\r",
+    "\n\r",
+    "\n",
+  ];
+  const fetchImpl = (async () => chunkedSseResponse(chunks)) as unknown as typeof fetch;
+  const provider = new CodexRouterConversationProvider({
+    baseUrl: "http://127.0.0.1:4202/v1",
+    fetchImpl,
+  });
+  const events: BridgeEvent[] = [];
+
+  const result = await provider.runTurn(request(), { emit: event => events.push(event) });
+
+  expect(result.status).toBe("completed");
+  expect(result.text).toBe("chunk-safe");
+  expect(result.usage).toEqual({ inputTokens: 3, outputTokens: 1, totalTokens: 4 });
+  expect(result.providerMetadata).toEqual({ responseId: "resp_router_split_crlf" });
+  expect(events.map(event => event.type)).toEqual([
+    "turn.started",
     "text.delta",
     "turn.completed",
   ]);
