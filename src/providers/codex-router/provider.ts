@@ -222,6 +222,13 @@ async function safeJson(response: Response): Promise<unknown> {
   }
 }
 
+function normalizeSseLineEndings(value: string, final = false): string {
+  const pendingCr = !final && value.endsWith("\r");
+  const stable = pendingCr ? value.slice(0, -1) : value;
+  const normalized = stable.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  return pendingCr ? `${normalized}\r` : normalized;
+}
+
 async function consumeSse(
   body: ReadableStream<Uint8Array>,
   onEvent: (event: SseEvent) => void,
@@ -241,18 +248,23 @@ async function consumeSse(
     if (data.length > 0) onEvent({ event, data: data.join("\n") });
   };
 
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+  const drainFrames = () => {
     let boundary: number;
     while ((boundary = buffer.indexOf("\n\n")) >= 0) {
       const frame = buffer.slice(0, boundary);
       buffer = buffer.slice(boundary + 2);
       consumeFrame(frame);
     }
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer = normalizeSseLineEndings(buffer + decoder.decode(value, { stream: true }));
+    drainFrames();
   }
-  buffer += decoder.decode().replace(/\r\n/g, "\n");
+  buffer = normalizeSseLineEndings(buffer + decoder.decode(), true);
+  drainFrames();
   if (buffer.trim()) consumeFrame(buffer);
 }
 
