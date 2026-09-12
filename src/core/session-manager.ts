@@ -12,6 +12,11 @@ import { TurnStore, type PersistedTurnStatus } from "../persistence/turn-store";
 import { BridgeError } from "./errors";
 import { Mutex } from "./mutex";
 import type { BridgeEvent } from "./events";
+import { TurnScheduler } from "./turn-scheduler";
+import {
+  validateBridgeAttachments,
+  validateBridgeMessages,
+} from "./content-policy";
 
 export interface CreateSessionParams {
   name?: string;
@@ -72,12 +77,14 @@ function persistedStatus(result: BridgeTurnResult): PersistedTurnStatus {
 export class SessionManager {
   private readonly sessionLocks = new Map<string, Mutex>();
   private readonly activeTurns = new Map<string, ActiveTurn>();
+  private admittedTurns = 0;
 
   constructor(
     private readonly sessionStore: SessionStore,
     private readonly messageStore: MessageStore,
     private readonly turnStore: TurnStore,
     private readonly providers: Record<string, ConversationProvider>,
+    private readonly turnScheduler: TurnScheduler = new TurnScheduler(),
   ) {}
 
   private getLock(sessionId: string): Mutex {
@@ -101,6 +108,24 @@ export class SessionManager {
     const session = this.sessionStore.get(idOrName) ?? this.sessionStore.getByName(idOrName);
     if (!session) throw new BridgeError("session_not_found", `Session ${idOrName} not found`, false);
     return session;
+  }
+
+  private admitTurn(): () => void {
+    const capacity = this.turnScheduler.snapshot();
+    if (this.admittedTurns >= capacity.maxActive + capacity.maxQueued) {
+      throw new BridgeError(
+        "local_queue_full",
+        `Bridge capacity is full (${capacity.maxActive} active + ${capacity.maxQueued} queued)`,
+        true,
+      );
+    }
+    this.admittedTurns += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.admittedTurns -= 1;
+    };
   }
 
   async create(params: CreateSessionParams): Promise<SessionData> {
@@ -158,15 +183,22 @@ export class SessionManager {
     request: Omit<BridgeTurnRequest, "sessionId" | "requestId"> & { requestId?: string },
     ctx: { signal?: AbortSignal; emit: (event: BridgeEvent) => void },
   ): Promise<BridgeTurnResult> {
+    if (ctx.signal?.aborted) {
+      throw new BridgeError("client_cancelled", "Turn was cancelled before execution", false);
+    }
+
+    const releaseAdmission = this.admitTurn();
     const initialSession = await this.resolveSession(idOrName);
     const sessionId = initialSession.id;
-    const unlock = await this.getLock(sessionId).acquire();
+    let unlock: (() => void) | undefined;
+    let releaseCapacity: (() => void) | undefined;
     let turnId: string | undefined;
     let externalAbort: (() => void) | undefined;
 
     try {
+      unlock = await this.getLock(sessionId).acquire(ctx.signal);
       if (ctx.signal?.aborted) {
-        throw new BridgeError("client_cancelled", "Turn was cancelled before execution", false);
+        throw new BridgeError("client_cancelled", "Turn was cancelled before provider execution", false);
       }
 
       const session = await this.resolveSession(sessionId);
@@ -178,16 +210,20 @@ export class SessionManager {
       }
 
       const provider = this.providerFor(session);
-      const currentMessages = request.messages;
+      const currentMessages = validateBridgeMessages(request.messages, request.environment);
+      const attachments = validateBridgeAttachments(request.attachments, request.environment);
       const history = this.messageStore.listBySession(sessionId).map(parseMessage);
       turnId = request.requestId || generateTurnId();
+
+      releaseCapacity = await this.turnScheduler.acquire(
+        request.source === "relay" ? "normal" : "interactive",
+        ctx.signal,
+      );
 
       const turnReq: BridgeTurnRequest = {
         ...request,
         sessionId,
         requestId: turnId,
-        // The session is authoritative for provider/model selection. A protocol caller may not
-        // silently move an existing conversation to another model or provider.
         model: {
           provider: session.provider,
           model: session.model,
@@ -195,6 +231,7 @@ export class SessionManager {
         },
         messages: [...history, ...currentMessages],
         incrementalMessages: currentMessages,
+        attachments,
       };
 
       const controller = new AbortController();
@@ -271,10 +308,12 @@ export class SessionManager {
       if (!turnId || active?.turnId === turnId) this.activeTurns.delete(sessionId);
 
       const latest = this.sessionStore.get(sessionId);
-      if (latest && latest.status !== "closed" && latest.status !== "closing") {
+      if (latest && latest.status !== "closed" && latest.status !== "closing" && latest.status === "busy") {
         this.sessionStore.update(sessionId, { status: "ready" });
       }
-      unlock();
+      releaseCapacity?.();
+      unlock?.();
+      releaseAdmission();
     }
   }
 
@@ -315,7 +354,6 @@ export class SessionManager {
       }
     }
 
-    // Wait for an active send() to settle and release its browser/session ownership before closing.
     const unlock = await this.getLock(session.id).acquire();
     try {
       const provider = this.providerFor(session);
