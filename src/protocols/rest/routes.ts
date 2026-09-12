@@ -18,6 +18,7 @@ export interface BridgeApiOptions {
   runController?: RunController;
   listRuns?: () => CollaborationRun[] | Promise<CollaborationRun[]>;
   idempotencyStore?: IdempotencyStore;
+  requestShutdown?: () => void;
 }
 
 function tokenMatches(header: string | undefined, token: string): boolean {
@@ -97,6 +98,14 @@ export function createBridgeApi(sessionManager: SessionManager, options: BridgeA
   });
 
   app.get("/healthz", (c) => c.json({ status: "ok", service: "agent-chatgpt-bridge" }));
+
+  app.post("/shutdown", (c) => {
+    if (!options.requestShutdown) {
+      throw new BridgeError("provider_unavailable", "Bridge process shutdown control is not configured", false);
+    }
+    options.requestShutdown();
+    return c.json({ success: true, status: "shutting_down" });
+  });
 
   app.post("/sessions", async (c) => {
     const body = requireObject(await c.req.json(), "request body");
