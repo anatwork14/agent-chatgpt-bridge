@@ -49,22 +49,36 @@ export class ProviderRegistry {
   }
 
   async resolveModel(model: string): Promise<ConversationProvider> {
-    const matches: ConversationProvider[] = [];
-    for (const provider of this.values()) {
-      const capabilities = await provider.capabilities();
-      if (capabilities.models.includes(model)) matches.push(provider);
-    }
-    if (matches.length === 0) {
-      throw new BridgeError("model_unavailable", `No configured provider exposes model ${model}`, false);
-    }
-    if (matches.length > 1) {
+    // Public provider namespaces are the fast, deterministic ownership path. This avoids a network
+    // model-catalog request before every turn for downstream providers such as codex-router.
+    const namespacedMatches = this.values().filter(provider => model.startsWith(`${provider.name}/`));
+    if (namespacedMatches.length === 1) return namespacedMatches[0]!;
+    if (namespacedMatches.length > 1) {
       throw new BridgeError(
         "session_conflict",
-        `Model ${model} is ambiguous across providers: ${matches.map(provider => provider.name).join(", ")}`,
+        `Model ${model} is ambiguous across provider namespaces: ${namespacedMatches.map(provider => provider.name).join(", ")}`,
         false,
       );
     }
-    return matches[0]!;
+
+    // Compatibility path for existing or injected providers whose public model ids predate the
+    // namespace rule. Ambiguous ownership remains a hard failure instead of a first-match fallback.
+    const capabilityMatches: ConversationProvider[] = [];
+    for (const provider of this.values()) {
+      const capabilities = await provider.capabilities();
+      if (capabilities.models.includes(model)) capabilityMatches.push(provider);
+    }
+    if (capabilityMatches.length === 0) {
+      throw new BridgeError("model_unavailable", `No configured provider exposes model ${model}`, false);
+    }
+    if (capabilityMatches.length > 1) {
+      throw new BridgeError(
+        "session_conflict",
+        `Model ${model} is ambiguous across providers: ${capabilityMatches.map(provider => provider.name).join(", ")}`,
+        false,
+      );
+    }
+    return capabilityMatches[0]!;
   }
 }
 
