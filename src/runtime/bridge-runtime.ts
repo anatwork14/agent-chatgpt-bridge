@@ -15,6 +15,15 @@ import { RunController } from "../core/run-controller";
 import { BridgeError } from "../core/errors";
 import type { ConversationProvider } from "../providers/provider";
 import { ChatGPTWebConversationProvider } from "../providers/chatgpt-web/provider";
+import {
+  CodexRouterConversationProvider,
+  codexRouterProviderOptionsFromEnv,
+  type CodexRouterProviderOptions,
+} from "../providers/codex-router/provider";
+import {
+  ModelRouterConversationProvider,
+  ProviderRegistry,
+} from "../providers/registry";
 import { createBridgeApi } from "../protocols/rest/routes";
 import { createResponsesApi } from "../protocols/responses/routes";
 import { AgentChatGptMcpServer } from "../protocols/mcp/server";
@@ -22,11 +31,15 @@ import { AgentChatGptMcpServer } from "../protocols/mcp/server";
 export const DEFAULT_BRIDGE_PORT = 8765;
 
 export interface BridgeRuntime {
+  /** Primary provider retained for backward compatibility and default-model selection. */
   provider: ConversationProvider;
+  /** Concrete providers plus the internal model-router meta provider. */
+  providers: Readonly<Record<string, ConversationProvider>>;
   sessionManager: SessionManager;
   runController: RunController;
   api: Hono;
   mcp: AgentChatGptMcpServer;
+  defaultProvider: string;
   defaultModel: string;
   models: string[];
   apiToken: string;
@@ -38,7 +51,16 @@ export interface BridgeRuntime {
 }
 
 export interface BridgeRuntimeDependencies {
+  /** Replaces the normal ChatGPT Web primary provider, mainly for tests. */
   provider?: ConversationProvider;
+  /** Additional concrete providers used by tests or future integrations. */
+  additionalProviders?: readonly ConversationProvider[];
+  /**
+   * Explicit Codex Router configuration. When omitted, the runtime reads
+   * AGENT_CHATGPT_CODEX_ROUTER_BASE_URL / AGENT_CHATGPT_CODEX_ROUTER_API_KEY.
+   * Pass false to disable environment discovery.
+   */
+  codexRouter?: CodexRouterProviderOptions | false;
   port?: number;
   apiToken?: string;
   requestShutdown?: () => void;
@@ -78,7 +100,7 @@ export function preferredBridgeModel(models: readonly string[]): string {
   }
   const first = models[0];
   if (!first) {
-    throw new BridgeError("model_unavailable", "No ChatGPT Web model route is available", false);
+    throw new BridgeError("model_unavailable", "No primary provider model route is available", false);
   }
   return first;
 }
@@ -91,16 +113,34 @@ export async function createBridgeRuntime(
 
   const provider = dependencies.provider
     ?? new ChatGPTWebConversationProvider(providerConfig(config));
-  const capabilities = await provider.capabilities();
-  const models = [...capabilities.models];
-  const defaultModel = preferredBridgeModel(models);
+  const registry = new ProviderRegistry([provider]);
+
+  const codexRouterOptions = dependencies.codexRouter === false
+    ? undefined
+    : dependencies.codexRouter ?? codexRouterProviderOptionsFromEnv();
+  if (codexRouterOptions) {
+    registry.register(new CodexRouterConversationProvider(codexRouterOptions));
+  }
+  for (const additionalProvider of dependencies.additionalProviders ?? []) {
+    registry.register(additionalProvider);
+  }
+
+  const modelRouter = new ModelRouterConversationProvider(registry);
+  const providers = registry.asRecord([modelRouter]);
+
+  // The primary provider controls the default model. Additional providers are opt-in by choosing
+  // one of their namespaced model IDs, so enabling codex-router cannot silently change behavior.
+  const primaryCapabilities = await provider.capabilities();
+  const defaultModel = preferredBridgeModel(primaryCapabilities.models);
+  const defaultProvider = modelRouter.name;
+  const models = await registry.listModels();
 
   const turnStore = new TurnStore();
   const sessionManager = new SessionManager(
     new SessionStore(),
     new MessageStore(),
     turnStore,
-    { [provider.name]: provider },
+    providers,
   );
   const recoveredInterruptedTurns = sessionManager.recoverInterruptedTurns();
 
@@ -127,10 +167,10 @@ export async function createBridgeRuntime(
   const apiToken = dependencies.apiToken ?? bridgeApiToken(config);
   const port = resolveBridgePort(dependencies.port);
   const host = "127.0.0.1" as const;
-  const listModels = async () => [...(await provider.capabilities()).models];
+  const listModels = async () => registry.listModels();
   const bridgeApi = createBridgeApi(sessionManager, {
     apiToken,
-    defaultProvider: provider.name,
+    defaultProvider,
     defaultModel,
     listModels,
     runController,
@@ -139,7 +179,7 @@ export async function createBridgeRuntime(
   });
   const responsesApi = createResponsesApi(sessionManager, {
     apiToken,
-    defaultProvider: provider.name,
+    defaultProvider,
     defaultModel,
     listModels,
     turnStore,
@@ -149,7 +189,7 @@ export async function createBridgeRuntime(
   api.route("/", responsesApi);
 
   const mcp = new AgentChatGptMcpServer(sessionManager, {
-    defaultProvider: provider.name,
+    defaultProvider,
     defaultModel,
     listModels,
   });
@@ -177,10 +217,12 @@ export async function createBridgeRuntime(
 
   return {
     provider,
+    providers,
     sessionManager,
     runController,
     api,
     mcp,
+    defaultProvider,
     defaultModel,
     models,
     apiToken,
