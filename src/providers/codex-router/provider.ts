@@ -163,7 +163,32 @@ function outputText(response: RouterResponseObject): string {
   return text;
 }
 
-function errorFromHttp(status: number, payload: unknown): BridgeError {
+/**
+ * codex-router's caller capability is carried in the URL path. Transport stacks and upstream
+ * diagnostics occasionally include request URLs in error messages, so no raw provider message may
+ * cross the bridge boundary before the endpoint path has been redacted.
+ */
+function redactEndpointDetails(message: string, baseUrl: string): string {
+  let redacted = message.split(baseUrl).join("[codex-router-endpoint]");
+  try {
+    const parsed = new URL(baseUrl);
+    const pathname = parsed.pathname.replace(/\/$/, "");
+    if (pathname && pathname !== "/" && pathname !== "/v1") {
+      redacted = redacted.split(pathname).join("/[codex-router-capability]");
+      try {
+        redacted = redacted.split(decodeURIComponent(pathname)).join("/[codex-router-capability]");
+      } catch {
+        // The URL parser already accepted the path; a malformed percent escape cannot expose more
+        // than the original path, which was replaced above.
+      }
+    }
+  } catch {
+    // Constructor validation owns URL validity. Keep this function total for defensive callers.
+  }
+  return redacted;
+}
+
+function errorFromHttp(status: number, payload: unknown, baseUrl: string): BridgeError {
   let message = `Codex Router request failed with HTTP ${status}`;
   let upstreamCode: string | undefined;
   if (payload && typeof payload === "object") {
@@ -174,6 +199,7 @@ function errorFromHttp(status: number, payload: unknown): BridgeError {
       if (typeof raw.code === "string" && raw.code.trim()) upstreamCode = raw.code;
     }
   }
+  message = redactEndpointDetails(message, baseUrl);
   if (status === 401 || status === 403) {
     return new BridgeError("provider_authentication_failed", message, false);
   }
@@ -286,14 +312,14 @@ export class CodexRouterConversationProvider implements ConversationProvider {
         method: "GET",
         headers: this.headers("application/json"),
       });
-    } catch (error) {
+    } catch {
       throw new BridgeError(
         "provider_unavailable",
-        `Could not reach Codex Router: ${error instanceof Error ? error.message : String(error)}`,
+        "Could not reach Codex Router",
         true,
       );
     }
-    if (!response.ok) throw errorFromHttp(response.status, await safeJson(response));
+    if (!response.ok) throw errorFromHttp(response.status, await safeJson(response), this.baseUrl);
     const payload = await safeJson(response);
     const data = payload && typeof payload === "object" ? (payload as { data?: unknown }).data : undefined;
     if (!Array.isArray(data)) {
@@ -336,7 +362,7 @@ export class CodexRouterConversationProvider implements ConversationProvider {
       if (terminalSeen) return;
       terminalSeen = true;
       result.status = status;
-      result.error = { code, message, retryable };
+      result.error = { code, message: redactEndpointDetails(message, this.baseUrl), retryable };
       ctx.emit({
         type: "turn.failed",
         sessionId: request.sessionId,
@@ -386,7 +412,7 @@ export class CodexRouterConversationProvider implements ConversationProvider {
       });
 
       if (!response.ok) {
-        const error = errorFromHttp(response.status, await safeJson(response));
+        const error = errorFromHttp(response.status, await safeJson(response), this.baseUrl);
         fail("failed", error.code, error.message, error.retryable);
         return result;
       }
@@ -473,7 +499,7 @@ export class CodexRouterConversationProvider implements ConversationProvider {
           cancelled ? "client_cancelled" : bridgeError?.code ?? "provider_exception",
           cancelled
             ? "Codex Router turn was cancelled"
-            : bridgeError?.message ?? (error instanceof Error ? error.message : String(error)),
+            : bridgeError?.message ?? "Codex Router provider request failed",
           bridgeError?.retryable ?? false,
         );
       }
