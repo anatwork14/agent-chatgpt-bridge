@@ -11,31 +11,35 @@ const testDbPath = path.join(os.tmpdir(), `test-bridge-stores-${Date.now()}.db`)
 
 afterEach(() => {
   closeDatabase();
-  if (fs.existsSync(testDbPath)) {
-    fs.unlinkSync(testDbPath); if (fs.existsSync(testDbPath + "-wal")) fs.unlinkSync(testDbPath + "-wal"); if (fs.existsSync(testDbPath + "-shm")) fs.unlinkSync(testDbPath + "-shm");
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const file = testDbPath + suffix;
+    if (fs.existsSync(file)) fs.unlinkSync(file);
   }
 });
 
 test("SessionStore CRUD operations", () => {
   initDatabase(testDbPath);
   const store = new SessionStore();
-  
+
   store.create({
     id: "ses_1",
+    name: "demo",
     provider: "chatgpt-web",
-    model: "gpt-4",
-    status: "active",
+    model: "chatgpt-web/high",
+    status: "ready",
     conversationEpoch: 0,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
-  
-  let s = store.get("ses_1");
-  expect(s?.model).toBe("gpt-4");
-  
+
+  let session = store.get("ses_1");
+  expect(session?.model).toBe("chatgpt-web/high");
+  expect(store.getByName("demo")?.id).toBe("ses_1");
+  expect(store.list()).toHaveLength(1);
+
   store.update("ses_1", { status: "closed" });
-  s = store.get("ses_1");
-  expect(s?.status).toBe("closed");
+  session = store.get("ses_1");
+  expect(session?.status).toBe("closed");
 });
 
 test("TurnStore and MessageStore operations", () => {
@@ -47,8 +51,8 @@ test("TurnStore and MessageStore operations", () => {
   sessionStore.create({
     id: "ses_2",
     provider: "chatgpt-web",
-    model: "gpt-4",
-    status: "active",
+    model: "chatgpt-web/high",
+    status: "ready",
     conversationEpoch: 0,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -61,16 +65,23 @@ test("TurnStore and MessageStore operations", () => {
     contentJson: "[]",
     createdAt: new Date().toISOString(),
   });
-  
-  expect(msgStore.listBySession("ses_2").length).toBe(1);
+
+  expect(msgStore.listBySession("ses_2")).toHaveLength(1);
 
   turnStore.create({
     id: "turn_1",
     requestId: "req_1",
     sessionId: "ses_2",
-    status: "completed",
+    status: "running",
     source: "cli",
+    startedAt: new Date().toISOString(),
   });
-  
+  expect(turnStore.getActiveBySession("ses_2")?.id).toBe("turn_1");
+
+  turnStore.update("turn_1", {
+    status: "completed",
+    completedAt: new Date().toISOString(),
+  });
   expect(turnStore.get("turn_1")?.status).toBe("completed");
+  expect(turnStore.getActiveBySession("ses_2")).toBeNull();
 });
