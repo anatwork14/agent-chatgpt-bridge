@@ -88,6 +88,27 @@ export function resolveBridgePort(
   return raw;
 }
 
+export function assertCodexRouterDoesNotTargetBridge(baseUrl: string, bridgePort: number): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    // The concrete provider owns complete endpoint validation and will return the canonical error.
+    return;
+  }
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const loopback = hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+  const defaultPort = parsed.protocol === "https:" ? 443 : 80;
+  const endpointPort = parsed.port ? Number(parsed.port) : defaultPort;
+  if (loopback && endpointPort === bridgePort) {
+    throw new BridgeError(
+      "provider_loop_detected",
+      "Codex Router base URL points at the Agent ChatGPT Bridge listener; refusing a recursive provider route",
+      false,
+    );
+  }
+}
+
 export function preferredBridgeModel(models: readonly string[]): string {
   for (const candidate of [
     "chatgpt-web/high",
@@ -109,15 +130,23 @@ export async function createBridgeRuntime(
   config: AppConfig,
   dependencies: BridgeRuntimeDependencies = {},
 ): Promise<BridgeRuntime> {
+  const port = resolveBridgePort(dependencies.port);
+  const host = "127.0.0.1" as const;
+  const codexRouterOptions = dependencies.codexRouter === false
+    ? undefined
+    : dependencies.codexRouter ?? codexRouterProviderOptionsFromEnv();
+  if (codexRouterOptions) {
+    assertCodexRouterDoesNotTargetBridge(codexRouterOptions.baseUrl, port);
+  }
+
+  // Validate provider topology before opening persistent state so a configuration error cannot
+  // leave an otherwise-unused database handle behind.
   initDatabase();
 
   const provider = dependencies.provider
     ?? new ChatGPTWebConversationProvider(providerConfig(config));
   const registry = new ProviderRegistry([provider]);
 
-  const codexRouterOptions = dependencies.codexRouter === false
-    ? undefined
-    : dependencies.codexRouter ?? codexRouterProviderOptionsFromEnv();
   if (codexRouterOptions) {
     registry.register(new CodexRouterConversationProvider(codexRouterOptions));
   }
@@ -165,8 +194,6 @@ export async function createBridgeRuntime(
   );
 
   const apiToken = dependencies.apiToken ?? bridgeApiToken(config);
-  const port = resolveBridgePort(dependencies.port);
-  const host = "127.0.0.1" as const;
   const listModels = async () => registry.listModels();
   const bridgeApi = createBridgeApi(sessionManager, {
     apiToken,
