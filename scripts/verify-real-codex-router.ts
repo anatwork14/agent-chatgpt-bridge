@@ -9,7 +9,9 @@ const INTERNAL_KEY = "bridge_ci_internal_capability_0123456789abcdef";
 // This is the pinned router's current direct DeepSeek Responses route and is covered by
 // codex-router's own deepseek-responses-routing.test.mjs fixture.
 const ROUTED_MODEL = "codex-router/deepseek/deepseek-v4.1-flash";
-const UPSTREAM_MODEL = "deepseek-flash";
+// This focused fixture points the router's API plane directly at the fake upstream, bypassing the
+// api-forwarder that would normally translate gatewayModel -> upstreamModel for the provider.
+const UPSTREAM_MODEL = "deepseek-v4-1-flash";
 
 function invariant(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
