@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import type {
   BridgeTurnRequest,
   BridgeMessage,
@@ -90,6 +91,90 @@ function systemPrompt(messages: BridgeMessage[]): string[] | undefined {
   return prompts.length > 0 ? prompts : undefined;
 }
 
+function xml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+/**
+ * Generic Agent→ChatGPT turns are intentionally read-only at the Codex compatibility boundary.
+ * Reverse ChatGPT→local capabilities are a separate opt-in broker and must never be granted merely
+ * because the underlying ChatGPT Web adapter was originally built for Codex Full mode.
+ */
+function genericEnvironment(bridgeReq: BridgeTurnRequest): { cwd: string; roots: string[]; xml: string } {
+  const cwd = resolve(bridgeReq.environment?.cwd || process.cwd());
+  const configuredRoots = (bridgeReq.environment?.workspaceRoots ?? []).map(root => resolve(root));
+  const roots = [...new Set([cwd, ...configuredRoots])];
+  const rootXml = roots.map(root => `<root>${xml(root)}</root>`).join("");
+  return {
+    cwd,
+    roots,
+    xml: `<environment_context>\n  <cwd>${xml(cwd)}</cwd>\n  <filesystem><workspace_roots>${rootXml}</workspace_roots><permission_profile type="managed"><file_system type="restricted"><entry access="read"><special>:root</special></entry></file_system></permission_profile></filesystem>\n  <agent_chatgpt_bridge>true</agent_chatgpt_bridge>\n</environment_context>`,
+  };
+}
+
+function currentUserMessage(bridgeReq: BridgeTurnRequest): BridgeMessage | undefined {
+  const incremental = bridgeReq.incrementalMessages ?? [];
+  return [...incremental, ...bridgeReq.messages]
+    .findLast(message => message.role === "user");
+}
+
+function currentInstructionText(message: BridgeMessage | undefined): string {
+  if (!message) return "Continue the current bridge session.";
+  const text = message.content
+    .filter((part): part is Extract<BridgeContentPart, { type: "text" }> => part.type === "text")
+    .map(part => part.text)
+    .join("\n")
+    .trim();
+  return text || "User supplied non-text content for this turn.";
+}
+
+function syntheticRawBody(bridgeReq: BridgeTurnRequest): Record<string, unknown> {
+  const environment = genericEnvironment(bridgeReq);
+  const current = currentUserMessage(bridgeReq);
+  const turnMetadata = {
+    thread_id: bridgeReq.sessionId,
+    turn_id: bridgeReq.requestId,
+    request_kind: "turn",
+    sandbox: "read-only",
+    workspaces: Object.fromEntries(environment.roots.map(root => [root, {}])),
+  };
+  const itemMetadata = { turn_id: bridgeReq.requestId };
+
+  return {
+    model: bridgeReq.model.model,
+    stream: bridgeReq.stream,
+    prompt_cache_key: bridgeReq.sessionId,
+    client_metadata: {
+      "x-codex-turn-metadata": JSON.stringify(turnMetadata),
+    },
+    metadata: {
+      agent_chatgpt_bridge: true,
+      bridge_session_id: bridgeReq.sessionId,
+    },
+    input: [
+      {
+        type: "message",
+        id: `msg_bridge_env_${bridgeReq.requestId}`,
+        role: "user",
+        content: [{ type: "input_text", text: environment.xml }],
+        internal_chat_message_metadata_passthrough: itemMetadata,
+      },
+      {
+        type: "message",
+        id: current?.id || `msg_bridge_user_${bridgeReq.requestId}`,
+        role: "user",
+        content: [{ type: "input_text", text: currentInstructionText(current) }],
+        internal_chat_message_metadata_passthrough: itemMetadata,
+      },
+    ],
+  };
+}
+
 export function bridgeTurnRequestToCodexParsedRequest(bridgeReq: BridgeTurnRequest): CodexParsedRequest {
   // System messages become the canonical Codex system prompt only; duplicating them as developer
   // history changes semantics and inflates every reconstructed generic session.
@@ -129,5 +214,6 @@ export function bridgeTurnRequestToCodexParsedRequest(bridgeReq: BridgeTurnReque
       systemPrompt: systemPrompt(bridgeReq.messages),
     },
     options,
+    _rawBody: syntheticRawBody(bridgeReq),
   };
 }
