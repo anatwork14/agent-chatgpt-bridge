@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { validateBridgeContentPart } from "./content-policy";
 import { BridgeError } from "./errors";
 
@@ -31,7 +31,7 @@ test("local file attachment is canonicalized inside an explicit workspace root",
 
   expect(result.type).toBe("image");
   if (result.type === "image" && result.source.type === "local_file") {
-    expect(result.source.path).toBe(resolve(file));
+    expect(result.source.path).toBe(realpathSync(file));
   }
 });
 
