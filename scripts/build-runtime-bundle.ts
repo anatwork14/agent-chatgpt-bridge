@@ -54,7 +54,7 @@ mkdirSync(runtimeDir, { recursive: true });
 mkdirSync(binDir, { recursive: true });
 
 const build = await Bun.build({
-  entrypoints: [join(root, "src", "cli.ts")],
+  entrypoints: [join(root, "src", "cli.ts"), join(root, "src", "cli", "index.ts")],
   target: "bun",
   minify: true,
   external: ["playwright-core"],

@@ -130,3 +130,63 @@ export interface BridgeSession {
 
   metadata?: Record<string, unknown>;
 }
+
+export interface CollaborationRun {
+  id: string;
+  sessionId: string;
+  agentAdapterId: string;
+  objective: string;
+  status:
+    | "created"
+    | "running"
+    | "completed"
+    | "failed"
+    | "cancelled"
+    | "budget_exhausted";
+  round: number;
+  budget: {
+    maxRounds: number;
+    maxWallClockMs: number;
+    maxConsecutiveFailures: number;
+  };
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  finalSummary?: string;
+}
+
+export type AgentDecision =
+  | {
+      type: "message";
+      content: string;
+    }
+  | {
+      type: "done";
+      summary: string;
+    }
+  | {
+      type: "pause";
+      reason: string;
+    }
+  | {
+      type: "error";
+      message: string;
+      retryable: boolean;
+    };
+
+export interface AgentTurnInput {
+  runId: string;
+  objective: string;
+  round: number;
+  lastChatGptResponse?: {
+    text: string;
+  };
+}
+
+export interface ExternalAgentAdapter {
+  readonly id: string;
+  next(
+    input: AgentTurnInput,
+    ctx: { signal?: AbortSignal }
+  ): Promise<AgentDecision>;
+}

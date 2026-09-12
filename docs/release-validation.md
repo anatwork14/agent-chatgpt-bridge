@@ -1,65 +1,35 @@
-# Release validation
+# Release Validation Scenarios
 
-CI proves that the runtime builds, the launcher starts, and native packages pass their smoke
-contract on macOS, Windows, and Linux. It does not prove an authenticated ChatGPT session, a live
-MCP connector, or a complete Codex turn. A release candidate is not ready until those account-bound
-flows are exercised manually on the platforms below.
+To validate Phase 10 (Live ChatGPT integration), the following manual tests must be performed using an isolated DEV launcher. 
 
-## Required evidence
+## Scenario 1: New session
+- Command: `agent-chatgpt ask --session "release-test-1" "Hello, this is a test."`
+- Expected: Starts a fresh ChatGPT conversation in the browser.
 
-Record the release version, operating-system version, install path (`clean` or `upgrade`), ChatGPT
-plan, Codex version, result of each check, and a redacted Activity log for every failure. Never
-capture cookies, tunnel IDs, API keys, bearer tokens, or prompt contents.
+## Scenario 2: Two-turn continuation
+- Command: `agent-chatgpt ask --session "release-test-1" "What did I just say?"`
+- Expected: Navigates to or uses the existing ChatGPT conversation and assistant correctly recalls the previous turn.
 
-## Windows 11 gate
+## Scenario 3: Two concurrent sessions
+- Command: Run `agent-chatgpt ask --session "concurrent-A" "I am A"` and `agent-chatgpt ask --session "concurrent-B" "I am B"` concurrently.
+- Expected: Two separate ChatGPT threads are utilized, requests do not bleed into each other, and turn synchronization is strictly serialized if directed to the same session.
 
-Run this list on a maintained Windows 11 x64 machine with a real ChatGPT account:
+## Scenario 4: Cancel
+- Command: Start a long query `agent-chatgpt ask --session "cancel-test" "Write a very long essay..."`, then send `agent-chatgpt session cancel "cancel-test" "latest"`.
+- Expected: The browser generation is aborted (Stop generating clicked).
 
-1. Install the packaged launcher on a clean profile and prove that the embedded Bun runtime starts.
-2. Sign in inside the embedded browser and prove that Temporary Chat reaches a usable composer.
-3. Install the Codex model route, restart Codex, and prove that every account-available ChatGPT Web
-   effort appears exactly once without removing native models.
-4. Complete one Browser-only turn and verify streamed commentary plus the final answer.
-5. Configure the `Codex Native2` connector, run **Verify runtime**, and complete one Full-mode local
-   tool turn. Repeat with Pro when the account exposes Pro.
-6. Drive a chat past the compaction threshold and prove that it continues after compaction without
-   a duplicate or orphaned browser turn.
-7. On a clean install, prove that setup offers both interaction modes and defaults to With
-   Automation. Select Zero Risk and prove that Codex shows exactly one generic Web model after
-   restart, a retained chat receives only the next prompt, and
-   compaction completes through MCP before the compacted continuation opens a fresh manual chat.
-   Inspect the copied prompt and prove that it contains only the current `request_id`, never a
-   surface nonce, capability token, or prompt-level lifecycle commands.
-   Switch back to Automatic and prove that the account-visible catalog is restored.
-8. Cancel a running turn by closing its launcher tab, then cancel another with the launcher action;
-   prove that neither turn recreates a tab or keeps the runtime busy.
-9. Quit the launcher during an active turn, confirm the explicit cancellation path, reopen it, and
-   prove that the saved ChatGPT session and Codex route are still valid.
-10. Prove Codex Voice can create a WebRTC call while Responses use the local bridge. Disconnect the
-   bridge and prove that both exact previous route assignments are restored; reconnect it and prove
-   that the existing private MCP credentials are reused rather than replaced.
-11. Upgrade from the previous public release and prove that launcher state, browser state, Codex
-    settings, and MCP configuration survive the updater transaction.
+## Scenario 5: Restart reconstruction
+- Command: Stop the background `serve` or tunnel, restart it, and issue an `ask` to a previous session.
+- Expected: The system fetches the URL from the persistence layer or reconstructs the session and resumes without failure.
 
-Any failed or unexecuted item blocks a stable release. An alpha may ship with a named failed item
-only when the release notes describe the limitation and recovery path explicitly.
+## Scenario 6: Image attachment
+- Command: `agent-chatgpt ask --session "image-test" "Describe this image" --image "./test.png"` (mocking image attachment through REST payload).
+- Expected: The image is successfully uploaded and context is interpreted by the model.
 
-### v3.0.0 result
+## Scenario 7: UI drift simulated failure
+- Command: Inject a DOM manipulation in the browser manually to break selectors.
+- Expected: Fails closed. The bridge MUST NOT return success, but return a clear DOM drift error (e.g., missing completion evidence).
 
-Maintainer validation passed on Windows 11 x64 on 2026-08-22 using the published v3.0.0-alpha
-upgrade package and a real ChatGPT Pro account. The authenticated launcher, Codex model catalog,
-Full-mode MCP tools, Pro turns, compaction, cancellation, session reuse, and preserved connector
-configuration were exercised successfully. The direct installer completed successfully but gave no
-clear completion action; v3.0.0 changes it to an assisted installer with a final launch option.
-
-## macOS gate
-
-Repeat items 2 through 10 on the oldest supported macOS version or the closest maintained machine.
-Packaging smoke and code-signing verification remain separate gates; neither substitutes for the
-interactive account flow.
-
-## Linux gate
-
-CI packaging smoke is required. Before claiming interactive Linux support for a release, repeat
-items 2 through 7 under a supported desktop session and record the display server and packaging
-format used.
+## Scenario 8: Autonomous two-round relay
+- Command: `agent-chatgpt run --session "auto-relay-test" --agent-command "node my-agent.js" --objective "Say hello, wait for reply, then say goodbye."`
+- Expected: Controller executes at least two rounds automatically, relaying JSONL payloads via `stdin`/`stdout`.

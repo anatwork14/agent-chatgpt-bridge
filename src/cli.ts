@@ -31,7 +31,7 @@ import { getTunnelServiceStatus, restartTunnelService, startTunnelService, stopT
 import { VERSION } from "./version";
 import { runDevCommand } from "./dev-chat/cli";
 
-const HELP = `codex-chatgpt-web ${VERSION}
+const HELP = `agent-chatgpt-bridge ${VERSION}
 
 Focused ChatGPT web-backed models for the native Codex harness.
 
@@ -579,7 +579,7 @@ async function main(): Promise<void> {
     assertNoArgs(args);
     const config = loadConfig();
     const server = startServer(config);
-    stdout.write(`codex-chatgpt-web ${VERSION} listening on http://${config.host}:${server.port}/v1 (${config.mode})\n`);
+    stdout.write(`agent-chatgpt-bridge ${VERSION} listening on http://${config.host}:${server.port}/v1 (${config.mode})\n`);
     await new Promise<void>(() => {});
   } else if (command === "dev") await runDevCommand(args);
   else if (command === "mcp") await runChatGptMcpMain(args);

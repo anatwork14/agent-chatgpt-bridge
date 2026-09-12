@@ -109,5 +109,51 @@ export function createBridgeApi(sessionManager: SessionManager) {
     });
   });
 
-  return app;
 }
+
+  app.post("/runs", async (c) => {
+    const body = await c.req.json();
+    let sessionId = body.chatgpt?.session_id;
+    if (!sessionId) {
+      const session = await sessionManager.create({
+        name: "Run session",
+        provider: "chatgpt-web",
+        model: "auto"
+      });
+      sessionId = session.id;
+    }
+    
+    // NOTE: This assumes RunController is accessible globally or passed in, 
+    // but we can just require it for now if needed.
+    const { RunController } = require("../../core/run-controller");
+    const { RunStore } = require("../../persistence/run-store");
+    const { SubprocessJsonlAdapter } = require("../../agents/subprocess-jsonl");
+
+    const runController = new RunController(
+      new RunStore(), 
+      sessionManager, 
+      (id, cmd) => new SubprocessJsonlAdapter(cmd || [])
+    );
+
+    const run = await runController.startRun(
+      sessionId,
+      body.objective,
+      body.agent_adapter?.type || "subprocess-jsonl",
+      body.agent_adapter?.command,
+      {
+        maxRounds: body.budget?.max_rounds,
+        maxWallClockMs: body.budget?.max_wall_clock_ms,
+        maxConsecutiveFailures: body.budget?.max_consecutive_failures
+      }
+    );
+
+    return c.json(run, 201);
+  });
+
+  app.get("/runs/:id", async (c) => {
+    const { RunStore } = require("../../persistence/run-store");
+    const store = new RunStore();
+    const run = store.get(c.req.param("id"));
+    return c.json(run);
+  });
+return app; }
