@@ -40,26 +40,71 @@ export class ProviderRegistry {
     return Object.fromEntries(entries);
   }
 
-  async listModels(): Promise<string[]> {
-    const discovered = await Promise.all(this.values().map(async provider => {
+  private namespacedOwner(model: string): ConversationProvider | undefined {
+    const matches = this.values().filter(provider => model.startsWith(`${provider.name}/`));
+    if (matches.length > 1) {
+      throw new BridgeError(
+        "session_conflict",
+        `Model ${model} is ambiguous across provider namespaces: ${matches.map(provider => provider.name).join(", ")}`,
+        false,
+      );
+    }
+    return matches[0];
+  }
+
+  /**
+   * Discovery is intentionally best-effort by default: an optional degraded provider must not
+   * make unrelated provider catalogs disappear. Use strict=true only for diagnostics/tests that
+   * explicitly require every configured provider to answer.
+   */
+  async listModels({ strict = false }: { strict?: boolean } = {}): Promise<string[]> {
+    const discovered = await Promise.allSettled(this.values().map(provider => provider.capabilities()));
+    if (strict) {
+      const rejected = discovered.find((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (rejected) throw rejected.reason;
+    }
+    const models = discovered.flatMap(result => result.status === "fulfilled" ? result.value.models : []);
+    return [...new Set(models)];
+  }
+
+  /** Validate only the provider that owns a namespaced model. */
+  async validateModel(model: string): Promise<void> {
+    const owner = this.namespacedOwner(model);
+    if (owner) {
+      const capabilities = await owner.capabilities();
+      if (!capabilities.models.includes(model)) {
+        throw new BridgeError(
+          "model_unavailable",
+          `Provider ${owner.name} does not expose model ${model}`,
+          false,
+        );
+      }
+      return;
+    }
+
+    // Compatibility path for legacy, non-namespaced model ids.
+    const matches: ConversationProvider[] = [];
+    for (const provider of this.values()) {
       const capabilities = await provider.capabilities();
-      return capabilities.models;
-    }));
-    return [...new Set(discovered.flat())];
+      if (capabilities.models.includes(model)) matches.push(provider);
+    }
+    if (matches.length === 0) {
+      throw new BridgeError("model_unavailable", `No configured provider exposes model ${model}`, false);
+    }
+    if (matches.length > 1) {
+      throw new BridgeError(
+        "session_conflict",
+        `Model ${model} is ambiguous across providers: ${matches.map(provider => provider.name).join(", ")}`,
+        false,
+      );
+    }
   }
 
   async resolveModel(model: string): Promise<ConversationProvider> {
     // Public provider namespaces are the fast, deterministic ownership path. This avoids a network
     // model-catalog request before every turn for downstream providers such as codex-router.
-    const namespacedMatches = this.values().filter(provider => model.startsWith(`${provider.name}/`));
-    if (namespacedMatches.length === 1) return namespacedMatches[0]!;
-    if (namespacedMatches.length > 1) {
-      throw new BridgeError(
-        "session_conflict",
-        `Model ${model} is ambiguous across provider namespaces: ${namespacedMatches.map(provider => provider.name).join(", ")}`,
-        false,
-      );
-    }
+    const namespaced = this.namespacedOwner(model);
+    if (namespaced) return namespaced;
 
     // Compatibility path for existing or injected providers whose public model ids predate the
     // namespace rule. Ambiguous ownership remains a hard failure instead of a first-match fallback.
@@ -95,6 +140,10 @@ export class ModelRouterConversationProvider implements ConversationProvider {
       supportsTools: false,
       models: await this.registry.listModels(),
     };
+  }
+
+  async validateModel(model: string): Promise<void> {
+    await this.registry.validateModel(model);
   }
 
   async runTurn(
