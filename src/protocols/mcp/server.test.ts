@@ -19,23 +19,38 @@ afterEach(() => {
   if (fs.existsSync(testDbPath + "-shm")) fs.unlinkSync(testDbPath + "-shm");
 });
 
+function isErrorResult(value: { isError?: boolean }): boolean {
+  return value.isError === true;
+}
+
 test("MCP server tool handling", async () => {
   initDatabase(testDbPath);
   const sm = new SessionManager(new SessionStore(), new MessageStore(), new TurnStore(), {
     "chatgpt-web": new FakeConversationProvider(),
   });
-  const server = new AgentChatGptMcpServer(sm);
+  const server = new AgentChatGptMcpServer(sm, {
+    defaultProvider: "chatgpt-web",
+    defaultModel: "fake-model",
+    listModels: async () => ["fake-model"],
+  });
 
   const createRes = await server.handleToolCall("chatgpt_create_session", { name: "test-mcp" });
-  expect(createRes.isError).toBeFalsy();
-  const sessionStr = createRes.content[0].text;
-  const session = JSON.parse(sessionStr);
+  expect(isErrorResult(createRes)).toBe(false);
+  const session = JSON.parse(createRes.content[0].text);
   expect(session.name).toBe("test-mcp");
+  expect(session.model).toBe("fake-model");
 
   const askRes = await server.handleToolCall("chatgpt_ask", { message: "Hello", session_id: session.id });
-  expect(askRes.isError).toBeFalsy();
-  expect(askRes.content[0].text).toBe("This is a fake response.");
+  expect(isErrorResult(askRes)).toBe(false);
+  const askPayload = JSON.parse(askRes.content[0].text);
+  expect(askPayload.session_id).toBe(session.id);
+  expect(askPayload.text).toBe("This is a fake response.");
+
+  const listModelsRes = await server.handleToolCall("chatgpt_list_models", {});
+  expect(isErrorResult(listModelsRes)).toBe(false);
+  expect(JSON.parse(listModelsRes.content[0].text).models).toEqual(["fake-model"]);
 
   const cancelRes = await server.handleToolCall("chatgpt_cancel", { session_id: session.id });
-  expect(cancelRes.content[0].text).toBe("Cancelled");
+  expect(isErrorResult(cancelRes)).toBe(false);
+  expect(JSON.parse(cancelRes.content[0].text)).toEqual({ cancelled: false });
 });
