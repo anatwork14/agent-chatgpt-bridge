@@ -114,3 +114,101 @@ test("REST API enforces configured local bearer token", async () => {
   });
   expect(allowed.status).toBe(200);
 });
+
+test("REST API replays session creation for the same idempotency key", async () => {
+  const { app } = fixture();
+  const init = {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "create-session-1",
+    },
+    body: JSON.stringify({ name: "idempotent-session" }),
+  };
+
+  const first = await app.request("/bridge/v1/sessions", init);
+  const firstSession = await first.json() as any;
+  const second = await app.request("/bridge/v1/sessions", init);
+  const secondSession = await second.json() as any;
+
+  expect(second.headers.get("idempotency-replayed")).toBe("true");
+  expect(secondSession.id).toBe(firstSession.id);
+  const sessions = await app.request("/bridge/v1/sessions");
+  expect((await sessions.json() as any[])).toHaveLength(1);
+});
+
+test("REST API rejects idempotency key reuse with a different body", async () => {
+  const { app } = fixture();
+  const headers = {
+    "Content-Type": "application/json",
+    "Idempotency-Key": "create-session-conflict",
+  };
+  const first = await app.request("/bridge/v1/sessions", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ name: "first" }),
+  });
+  expect(first.status).toBe(201);
+
+  const conflict = await app.request("/bridge/v1/sessions", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ name: "second" }),
+  });
+  expect(conflict.status).toBe(409);
+  expect((await conflict.json() as any).error.code).toBe("idempotency_conflict");
+});
+
+test("REST API replays a non-streaming ChatGPT turn without duplicating transcript", async () => {
+  const { app } = fixture();
+  const create = await app.request("/bridge/v1/sessions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "turn-idempotency" }),
+  });
+  const session = await create.json() as any;
+  const init = {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "turn-1",
+    },
+    body: JSON.stringify({
+      content: [{ type: "text", text: "hello once" }],
+      stream: false,
+    }),
+  };
+
+  const first = await app.request(`/bridge/v1/sessions/${session.id}/messages`, init);
+  const firstTurn = await first.json() as any;
+  const second = await app.request(`/bridge/v1/sessions/${session.id}/messages`, init);
+  const secondTurn = await second.json() as any;
+
+  expect(second.headers.get("idempotency-replayed")).toBe("true");
+  expect(secondTurn.turn_id).toBe(firstTurn.turn_id);
+  const transcript = await app.request(`/bridge/v1/sessions/${session.id}/messages`);
+  expect(await transcript.json()).toHaveLength(2);
+});
+
+test("REST API rejects idempotency keys on SSE turns", async () => {
+  const { app } = fixture();
+  const create = await app.request("/bridge/v1/sessions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "sse-no-replay" }),
+  });
+  const session = await create.json() as any;
+
+  const response = await app.request(`/bridge/v1/sessions/${session.id}/messages`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "sse-turn",
+    },
+    body: JSON.stringify({
+      content: [{ type: "text", text: "hello" }],
+      stream: true,
+    }),
+  });
+  expect(response.status).toBe(400);
+});
