@@ -11,6 +11,7 @@ export interface ResponsesApiOptions {
   apiToken?: string;
   defaultProvider?: string;
   defaultModel?: string;
+  listModels?: () => Promise<string[]>;
   turnStore: TurnStore;
 }
 
@@ -241,6 +242,9 @@ function parseRequest(value: unknown, defaultModel?: string): ParsedResponsesReq
       role: "system",
       content: [{ type: "text", text: body.instructions }],
       createdAt: new Date().toISOString(),
+      // Responses API instructions are turn-scoped and intentionally do not carry through
+      // previous_response_id. The provider receives them, but SessionManager does not persist them.
+      metadata: { transient: true, source: "responses.instructions" },
     });
   }
   messages.push(...parseInput(body.input));
@@ -334,6 +338,23 @@ export function createResponsesApi(sessionManager: SessionManager, options: Resp
       ));
     }
     await next();
+  });
+
+  app.get("/models", async (c) => {
+    try {
+      const models = options.listModels ? await options.listModels() : [];
+      return c.json({
+        object: "list",
+        data: models.map(id => ({
+          id,
+          object: "model",
+          created: 0,
+          owned_by: "agent-chatgpt-bridge",
+        })),
+      });
+    } catch (error) {
+      return errorResponse(error);
+    }
   });
 
   app.post("/responses", async (c) => {
@@ -495,7 +516,11 @@ export function createResponsesApi(sessionManager: SessionManager, options: Resp
                 content: [{ type: "output_text", text: finalText, annotations: [] }],
               },
             });
-            const terminalEvent = result.status === "completed" ? "response.completed" : "response.failed";
+            const terminalEvent = result.status === "completed"
+              ? "response.completed"
+              : result.status === "incomplete"
+                ? "response.incomplete"
+                : "response.failed";
             emit(terminalEvent, {
               response: responseObject({
                 id,
