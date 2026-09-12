@@ -14,7 +14,7 @@
   "packageManager": "bun@1.4.0",
   "type": "module",
   "bin": {
-    "codex-chatgpt-web": "./src/cli.ts"
+    "codex-chatgpt-web": "./src/cli.ts", "agent-chatgpt": "./src/cli/index.ts"
   },
   "files": [
     "dist",

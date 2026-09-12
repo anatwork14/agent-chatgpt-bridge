@@ -1,0 +1,84 @@
+import { getDatabase } from "./database";
+
+export interface SessionData {
+  id: string;
+  name?: string;
+  provider: string;
+  model: string;
+  effort?: string;
+  status: "active" | "closed";
+  conversationEpoch: number;
+  continuityMode?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastTurnAt?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export class SessionStore {
+  create(session: SessionData) {
+    const db = getDatabase();
+    db.prepare(`
+      INSERT INTO sessions (id, name, provider, model, effort, status, conversation_epoch, continuity_mode, created_at, updated_at, last_turn_at, metadata_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      session.id,
+      session.name || null,
+      session.provider,
+      session.model,
+      session.effort || null,
+      session.status,
+      session.conversationEpoch,
+      session.continuityMode || null,
+      session.createdAt,
+      session.updatedAt,
+      session.lastTurnAt || null,
+      session.metadata ? JSON.stringify(session.metadata) : null
+    );
+  }
+
+  get(id: string): SessionData | null {
+    const db = getDatabase();
+    const row = db.query("SELECT * FROM sessions WHERE id = ?").get(id) as any;
+    if (!row) return null;
+    return {
+      id: row.id,
+      name: row.name,
+      provider: row.provider,
+      model: row.model,
+      effort: row.effort,
+      status: row.status,
+      conversationEpoch: row.conversation_epoch,
+      continuityMode: row.continuity_mode,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      lastTurnAt: row.last_turn_at,
+      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+    };
+  }
+
+  update(id: string, updates: Partial<SessionData>) {
+    const db = getDatabase();
+    const current = this.get(id);
+    if (!current) throw new Error("Session not found");
+    const merged = { ...current, ...updates, updatedAt: new Date().toISOString() };
+    
+    db.prepare(`
+      UPDATE sessions SET
+        name = ?, provider = ?, model = ?, effort = ?, status = ?, conversation_epoch = ?, continuity_mode = ?, updated_at = ?, last_turn_at = ?, metadata_json = ?
+      WHERE id = ?
+    `).run(
+      merged.name || null,
+      merged.provider,
+      merged.model,
+      merged.effort || null,
+      merged.status,
+      merged.conversationEpoch,
+      merged.continuityMode || null,
+      merged.updatedAt,
+      merged.lastTurnAt || null,
+      merged.metadata ? JSON.stringify(merged.metadata) : null,
+      id
+    );
+  }
+}
