@@ -6,6 +6,8 @@ test("CLI basics", async () => {
   const output = result.stdout.toString();
   expect(output).toContain("Universal Agent -> ChatGPT Web bridge.");
   expect(output).toContain("agent-chatgpt serve");
+  expect(output).toContain("agent-chatgpt stop");
+  expect(output).toContain("agent-chatgpt session cancel SESSION");
   expect(output).toContain("agent-chatgpt run list");
   expect(output).toContain("--prompt-prefix TEXT");
 });
