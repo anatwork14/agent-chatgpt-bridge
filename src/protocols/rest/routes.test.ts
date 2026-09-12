@@ -6,24 +6,13 @@ import { initDatabase, closeDatabase } from "../../persistence/database";
 import { SessionStore } from "../../persistence/session-store";
 import { MessageStore } from "../../persistence/message-store";
 import { TurnStore } from "../../persistence/turn-store";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 
-const testDbPath = path.join(os.tmpdir(), `test-bridge-rest-${Date.now()}.db`);
-
-function cleanupDb(): void {
+afterEach(() => {
   closeDatabase();
-  for (const suffix of ["", "-wal", "-shm"]) {
-    const file = testDbPath + suffix;
-    if (fs.existsSync(file)) fs.unlinkSync(file);
-  }
-}
-
-afterEach(cleanupDb);
+});
 
 function fixture(token?: string) {
-  initDatabase(testDbPath);
+  initDatabase(":memory:");
   const provider = new FakeConversationProvider();
   const sm = new SessionManager(new SessionStore(), new MessageStore(), new TurnStore(), {
     fake: provider,
