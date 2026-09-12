@@ -52,16 +52,19 @@ export interface BridgeOutputContract {
   schema?: Record<string, unknown>;
 }
 
+export type BridgeRequestSource =
+  | "codex"
+  | "responses"
+  | "rest"
+  | "mcp"
+  | "cli"
+  | "relay"
+  | "internal";
+
 export interface BridgeTurnRequest {
   requestId: string;
   sessionId: string;
-  source:
-    | "codex"
-    | "responses"
-    | "mcp"
-    | "cli"
-    | "relay"
-    | "internal";
+  source: BridgeRequestSource;
   model: BridgeModelSelection;
   messages: BridgeMessage[];
   incrementalMessages?: BridgeMessage[];
@@ -184,7 +187,7 @@ export interface ExternalAgentAdapter {
   initialize?(context: { runId: string; objective: string; cwd?: string }): Promise<void>;
   next(
     input: AgentTurnInput,
-    ctx: { signal?: AbortSignal }
+    ctx: { signal?: AbortSignal },
   ): Promise<AgentDecision>;
   close?(): Promise<void>;
 }
