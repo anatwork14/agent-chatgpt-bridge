@@ -25,8 +25,9 @@ export interface BridgeMessage {
   metadata?: Record<string, unknown>;
 }
 
+/** Provider identifiers are deliberately opaque so the core remains provider-agnostic. */
 export interface BridgeModelSelection {
-  provider: "chatgpt-web";
+  provider: string;
   model: string;
   effort?: string;
 }
@@ -82,20 +83,11 @@ export interface BridgeTurnResult {
   requestId: string;
   sessionId: string;
   turnId: string;
-  status:
-    | "completed"
-    | "cancelled"
-    | "failed"
-    | "incomplete";
-
+  status: "completed" | "cancelled" | "failed" | "incomplete";
   text: string;
-
   structured?: unknown;
-
   usage?: BridgeUsage;
-
   providerMetadata?: Record<string, unknown>;
-
   error?: {
     code: string;
     message: string;
@@ -114,20 +106,14 @@ export type SessionStatus =
 export interface BridgeSession {
   id: string;
   name?: string;
-
-  provider: "chatgpt-web";
-
+  provider: string;
   model: string;
   effort?: string;
-
   status: SessionStatus;
-
   conversationEpoch: number;
-
   createdAt: string;
   updatedAt: string;
   lastTurnAt?: string;
-
   metadata?: Record<string, unknown>;
 }
 
@@ -139,6 +125,7 @@ export interface CollaborationRun {
   status:
     | "created"
     | "running"
+    | "paused"
     | "completed"
     | "failed"
     | "cancelled"
@@ -159,6 +146,7 @@ export type AgentDecision =
   | {
       type: "message";
       content: string;
+      attachments?: BridgeContentPart[];
     }
   | {
       type: "done";
@@ -180,13 +168,23 @@ export interface AgentTurnInput {
   round: number;
   lastChatGptResponse?: {
     text: string;
+    structured?: unknown;
+  };
+  transcript?: Array<{
+    speaker: "agent" | "chatgpt";
+    text: string;
+  }>;
+  workspace?: {
+    cwd?: string;
   };
 }
 
 export interface ExternalAgentAdapter {
   readonly id: string;
+  initialize?(context: { runId: string; objective: string; cwd?: string }): Promise<void>;
   next(
     input: AgentTurnInput,
     ctx: { signal?: AbortSignal }
   ): Promise<AgentDecision>;
+  close?(): Promise<void>;
 }
