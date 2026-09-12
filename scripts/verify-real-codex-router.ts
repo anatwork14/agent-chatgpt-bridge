@@ -177,6 +177,10 @@ const child = Bun.spawn([nodeBinary, routerEntry], {
     // without requiring a native Codex installation/capture step on GitHub Actions.
     CODEX_ROUTER_CATALOG: fixtureCatalog,
     CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    // Direct API providers (including DeepSeek) are sent to the router's API plane. In a full
+    // installation that plane is the api-forwarder on port 4203; this focused integration fixture
+    // deliberately substitutes the same in-process fake upstream instead of spawning another service.
+    CODEX_ROUTER_API_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
     CODEX_ROUTER_OAUTH_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
     CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
     CODEX_ROUTER_GROK_OAUTH_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
