@@ -6,17 +6,9 @@ import { initDatabase, closeDatabase } from "../../persistence/database";
 import { SessionStore } from "../../persistence/session-store";
 import { MessageStore } from "../../persistence/message-store";
 import { TurnStore } from "../../persistence/turn-store";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-
-const testDbPath = path.join(os.tmpdir(), `test-bridge-mcp-${Date.now()}.db`);
 
 afterEach(() => {
   closeDatabase();
-  if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
-  if (fs.existsSync(testDbPath + "-wal")) fs.unlinkSync(testDbPath + "-wal");
-  if (fs.existsSync(testDbPath + "-shm")) fs.unlinkSync(testDbPath + "-shm");
 });
 
 function isErrorResult(value: unknown): boolean {
@@ -27,7 +19,7 @@ function isErrorResult(value: unknown): boolean {
 }
 
 test("MCP server tool handling", async () => {
-  initDatabase(testDbPath);
+  initDatabase(":memory:");
   const sm = new SessionManager(new SessionStore(), new MessageStore(), new TurnStore(), {
     "chatgpt-web": new FakeConversationProvider(),
   });
