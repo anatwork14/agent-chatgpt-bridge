@@ -5,21 +5,13 @@ import { MessageStore } from "../persistence/message-store";
 import { TurnStore } from "../persistence/turn-store";
 import { SessionManager } from "./session-manager";
 import { FakeConversationProvider } from "../providers/fake/provider";
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
-
-const testDbPath = path.join(os.tmpdir(), `test-bridge-sm-${Date.now()}.db`);
 
 afterEach(() => {
   closeDatabase();
-  if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
-  if (fs.existsSync(testDbPath + "-wal")) fs.unlinkSync(testDbPath + "-wal");
-  if (fs.existsSync(testDbPath + "-shm")) fs.unlinkSync(testDbPath + "-shm");
 });
 
 test("SessionManager isolated execution", async () => {
-  initDatabase(testDbPath);
+  initDatabase(":memory:");
   const sessionStore = new SessionStore();
   const messageStore = new MessageStore();
   const turnStore = new TurnStore();
@@ -57,18 +49,17 @@ test("SessionManager isolated execution", async () => {
 });
 
 test("SessionManager serialization", async () => {
-  initDatabase(testDbPath);
+  initDatabase(":memory:");
   const sessionStore = new SessionStore();
   const messageStore = new MessageStore();
   const turnStore = new TurnStore();
-  const provider = new FakeConversationProvider();
-  
+
   // Create a provider that takes time to complete
   let activeRuns = 0;
   const slowProvider = {
     name: "slow",
     capabilities: async () => ({ supportsImages: true, supportsTools: false, models: [] }),
-    runTurn: async (req: any, ctx: any) => {
+    runTurn: async (req: any, _ctx: any) => {
       activeRuns++;
       expect(activeRuns).toBe(1); // Should only have 1 active at a time
       await new Promise(r => setTimeout(r, 20));
@@ -98,7 +89,7 @@ test("SessionManager serialization", async () => {
 });
 
 test("SessionManager cancel and close", async () => {
-  initDatabase(testDbPath);
+  initDatabase(":memory:");
   const sessionStore = new SessionStore();
   const manager = new SessionManager(sessionStore, new MessageStore(), new TurnStore(), {
     fake: new FakeConversationProvider(),
@@ -106,7 +97,7 @@ test("SessionManager cancel and close", async () => {
 
   const s = await manager.create({ provider: "fake", model: "fake-model" });
   await manager.cancel(s.id, "turn_1"); // should not throw
-  
+
   await manager.close(s.id);
   const closed = await manager.get(s.id);
   expect(closed.status).toBe("closed");
