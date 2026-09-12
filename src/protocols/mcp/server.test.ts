@@ -19,8 +19,11 @@ afterEach(() => {
   if (fs.existsSync(testDbPath + "-shm")) fs.unlinkSync(testDbPath + "-shm");
 });
 
-function isErrorResult(value: { isError?: boolean }): boolean {
-  return value.isError === true;
+function isErrorResult(value: unknown): boolean {
+  return !!value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && (value as { isError?: unknown }).isError === true;
 }
 
 test("MCP server tool handling", async () => {
