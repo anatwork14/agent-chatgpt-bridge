@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { stdin, stdout } from "node:process";
 import { loadConfig } from "../config";
+import { findInstalledLauncherExecutable } from "../dev-chat/profile";
 import {
   bridgeApiToken,
   createBridgeRuntime,
@@ -15,6 +17,7 @@ const HELP = `agent-chatgpt
 Universal Agent -> ChatGPT Web bridge.
 
 Usage:
+  agent-chatgpt app
   agent-chatgpt serve
   agent-chatgpt stop [--json]
   agent-chatgpt status [--json]
@@ -107,6 +110,18 @@ async function runLegacyCli(args: string[]): Promise<void> {
   });
   const exitCode = await child.exited;
   if (exitCode !== 0) process.exitCode = exitCode;
+}
+
+function appCommand(): void {
+  const executable = findInstalledLauncherExecutable();
+  const child = spawn(executable, [], {
+    detached: true,
+    env: process.env,
+    stdio: "ignore",
+    windowsHide: false,
+  });
+  child.unref();
+  stdout.write(`Opened Codex Web GPT: ${executable}\n`);
 }
 
 function clientConfig(portOverride?: number): ClientConfig {
@@ -348,6 +363,11 @@ async function main(): Promise<void> {
   const command = args.shift() ?? "help";
   if (command === "help") {
     stdout.write(HELP);
+    return;
+  }
+  if (command === "app") {
+    assertNoArgs(args);
+    appCommand();
     return;
   }
   if (command === "serve") {
