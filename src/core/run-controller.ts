@@ -46,6 +46,7 @@ function retryableError(error: unknown): boolean {
 
 export class RunController {
   private readonly activeRuns = new Map<string, AbortController>();
+  private readonly runSettlements = new Map<string, Promise<void>>();
 
   constructor(
     private readonly runStore: RunStore,
@@ -113,51 +114,72 @@ export class RunController {
     const controller = new AbortController();
     this.activeRuns.set(run.id, controller);
 
-    void this.runLoop(run, command, controller.signal).catch(error => {
-      const current = this.runStore.get(run.id);
-      if (current && current.status === "running") {
-        const completedAt = new Date().toISOString();
-        this.runStore.update(run.id, {
-          status: controller.signal.aborted ? "cancelled" : "failed",
-          completedAt,
-          finalSummary: error instanceof Error ? error.message : String(error),
-        });
-        this.auditStore.log({
-          eventType: controller.signal.aborted ? "run.cancelled" : "run.failed",
-          runId: run.id,
-          sessionId: run.sessionId,
-          payload: { error: error instanceof Error ? error.message : String(error) },
-          createdAt: completedAt,
-        });
-      }
-      this.activeRuns.delete(run.id);
-    });
+    const settlement = this.runLoop(run, command, controller.signal)
+      .catch(error => {
+        const current = this.runStore.get(run.id);
+        if (current && current.status === "running") {
+          const completedAt = new Date().toISOString();
+          this.runStore.update(run.id, {
+            status: controller.signal.aborted ? "cancelled" : "failed",
+            completedAt,
+            finalSummary: error instanceof Error ? error.message : String(error),
+          });
+          this.auditStore.log({
+            eventType: controller.signal.aborted ? "run.cancelled" : "run.failed",
+            runId: run.id,
+            sessionId: run.sessionId,
+            payload: { error: error instanceof Error ? error.message : String(error) },
+            createdAt: completedAt,
+          });
+        }
+      })
+      .finally(() => {
+        this.activeRuns.delete(run.id);
+        this.runSettlements.delete(run.id);
+      });
+    this.runSettlements.set(run.id, settlement);
+    void settlement;
 
     return run;
   }
 
   async cancelRun(runId: string): Promise<boolean> {
     const run = this.runStore.get(runId);
-    if (!run) return false;
-    if (run.status !== "running") return false;
+    if (!run || run.status !== "running") return false;
 
     const controller = this.activeRuns.get(runId);
     if (controller && !controller.signal.aborted) {
       controller.abort(new DOMException("Collaboration run cancelled", "AbortError"));
     }
-    // SessionManager links this same run signal into the browser adapter, but targeted cancellation
-    // shortens teardown when a provider also exposes an explicit cancel hook.
     await this.sessionManager.cancel(run.sessionId, "latest").catch(() => false);
 
-    const completedAt = new Date().toISOString();
-    this.runStore.update(runId, { status: "cancelled", completedAt });
-    this.auditStore.log({
-      eventType: "run.cancelled",
-      runId,
-      sessionId: run.sessionId,
-      createdAt: completedAt,
-    });
+    const current = this.runStore.get(runId);
+    if (current?.status === "running") {
+      const completedAt = new Date().toISOString();
+      this.runStore.update(runId, { status: "cancelled", completedAt });
+      this.auditStore.log({
+        eventType: "run.cancelled",
+        runId,
+        sessionId: run.sessionId,
+        createdAt: completedAt,
+      });
+    }
+
+    await this.runSettlements.get(runId)?.catch(() => undefined);
     return true;
+  }
+
+  async cancelAllRuns(): Promise<number> {
+    const ids = [...this.activeRuns.keys()];
+    const results = await Promise.all(ids.map(id => this.cancelRun(id)));
+    await this.waitForIdle();
+    return results.filter(Boolean).length;
+  }
+
+  async waitForIdle(): Promise<void> {
+    while (this.runSettlements.size > 0) {
+      await Promise.allSettled([...this.runSettlements.values()]);
+    }
   }
 
   private async nextAgentDecision(
@@ -332,6 +354,7 @@ export class RunController {
 
         try {
           const session = await this.sessionManager.get(run.sessionId);
+          const cwd = process.cwd();
           const chatgptResult = await this.sessionManager.send(
             run.sessionId,
             {
@@ -350,6 +373,7 @@ export class RunController {
                 ],
                 createdAt: new Date().toISOString(),
               }],
+              environment: { cwd, workspaceRoots: [cwd] },
               stream: false,
             },
             { signal: chatController.signal, emit: () => undefined },
@@ -410,7 +434,6 @@ export class RunController {
       }
     } finally {
       await adapter.close?.().catch(() => undefined);
-      this.activeRuns.delete(run.id);
       if (signal.aborted) {
         const current = this.runStore.get(run.id);
         if (current?.status === "running") {
