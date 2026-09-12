@@ -11,7 +11,7 @@ afterEach(() => {
   closeDatabase();
 });
 
-function fixture(token?: string) {
+function fixture(token?: string, requestShutdown?: () => void) {
   initDatabase(":memory:");
   const provider = new FakeConversationProvider();
   const sm = new SessionManager(new SessionStore(), new MessageStore(), new TurnStore(), {
@@ -24,6 +24,7 @@ function fixture(token?: string) {
       defaultProvider: "fake",
       defaultModel: "fake-model",
       listModels: async () => (await provider.capabilities()).models,
+      requestShutdown,
     }),
   };
 }
@@ -102,6 +103,25 @@ test("REST API enforces configured local bearer token", async () => {
     headers: { Authorization: "Bearer test-secret" },
   });
   expect(allowed.status).toBe(200);
+});
+
+test("REST API shutdown is authenticated and delegates only to its configured owner", async () => {
+  let requested = 0;
+  const { app } = fixture("shutdown-secret", () => {
+    requested += 1;
+  });
+
+  const denied = await app.request("/bridge/v1/shutdown", { method: "POST" });
+  expect(denied.status).toBe(401);
+  expect(requested).toBe(0);
+
+  const allowed = await app.request("/bridge/v1/shutdown", {
+    method: "POST",
+    headers: { Authorization: "Bearer shutdown-secret" },
+  });
+  expect(allowed.status).toBe(200);
+  expect(await allowed.json()).toEqual({ success: true, status: "shutting_down" });
+  expect(requested).toBe(1);
 });
 
 test("REST API replays session creation for the same idempotency key", async () => {
