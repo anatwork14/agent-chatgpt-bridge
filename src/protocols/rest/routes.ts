@@ -6,6 +6,8 @@ import { SessionManager } from "../../core/session-manager";
 import type { RunController } from "../../core/run-controller";
 import { BridgeError } from "../../core/errors";
 import type { BridgeContentPart } from "../../core/domain";
+import { IdempotencyStore } from "../../persistence/idempotency-store";
+import { executeIdempotent, validateIdempotencyKey } from "./idempotency";
 
 export interface BridgeApiOptions {
   /** Optional local bearer token. Production composition should provide one by default. */
@@ -14,6 +16,7 @@ export interface BridgeApiOptions {
   defaultModel?: string;
   listModels?: () => Promise<string[]>;
   runController?: RunController;
+  idempotencyStore?: IdempotencyStore;
 }
 
 function tokenMatches(header: string | undefined, token: string): boolean {
@@ -48,6 +51,7 @@ function bridgeStatus(error: BridgeError): number {
     case "session_busy":
     case "session_conflict":
     case "idempotency_conflict":
+    case "idempotency_in_progress":
       return 409;
     case "provider_rate_limited":
     case "local_queue_full":
@@ -55,6 +59,9 @@ function bridgeStatus(error: BridgeError): number {
     case "provider_unavailable":
     case "browser_not_ready":
       return 503;
+    case "idempotency_corrupt":
+    case "session_history_corrupt":
+      return 500;
     default:
       return 400;
   }
@@ -62,6 +69,7 @@ function bridgeStatus(error: BridgeError): number {
 
 export function createBridgeApi(sessionManager: SessionManager, options: BridgeApiOptions = {}) {
   const app = new Hono().basePath("/bridge/v1");
+  const idempotencyStore = options.idempotencyStore ?? new IdempotencyStore();
 
   app.use("*", async (c, next) => {
     if (options.apiToken && !tokenMatches(c.req.header("authorization"), options.apiToken)) {
@@ -91,26 +99,35 @@ export function createBridgeApi(sessionManager: SessionManager, options: BridgeA
 
   app.post("/sessions", async (c) => {
     const body = requireObject(await c.req.json(), "request body");
-    const provider = typeof body.provider === "string"
-      ? body.provider
-      : options.defaultProvider ?? "chatgpt-web";
-    const model = typeof body.model === "string" ? body.model : options.defaultModel;
-    if (!model) {
-      throw new BridgeError(
-        "invalid_request",
-        "model is required unless the daemon has an explicit default model configured",
-        false,
-      );
-    }
-    const session = await sessionManager.create({
-      name: typeof body.name === "string" ? body.name : undefined,
-      provider,
-      model,
-      effort: typeof body.effort === "string" ? body.effort : undefined,
-      metadata: body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)
-        ? body.metadata as Record<string, unknown>
-        : undefined,
-    });
+    const { value: session, replayed } = await executeIdempotent(
+      idempotencyStore,
+      "POST:/sessions",
+      c.req.header("idempotency-key"),
+      body,
+      async () => {
+        const provider = typeof body.provider === "string"
+          ? body.provider
+          : options.defaultProvider ?? "chatgpt-web";
+        const model = typeof body.model === "string" ? body.model : options.defaultModel;
+        if (!model) {
+          throw new BridgeError(
+            "invalid_request",
+            "model is required unless the daemon has an explicit default model configured",
+            false,
+          );
+        }
+        return await sessionManager.create({
+          name: typeof body.name === "string" ? body.name : undefined,
+          provider,
+          model,
+          effort: typeof body.effort === "string" ? body.effort : undefined,
+          metadata: body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)
+            ? body.metadata as Record<string, unknown>
+            : undefined,
+        });
+      },
+    );
+    if (replayed) c.header("idempotency-replayed", "true");
     return c.json(session, 201);
   });
 
@@ -127,8 +144,17 @@ export function createBridgeApi(sessionManager: SessionManager, options: BridgeA
     const body = requireObject(await c.req.json(), "request body");
     const content = contentParts(body.content);
     const isStream = body.stream === true || c.req.query("stream") === "true";
+    const idempotencyKey = validateIdempotencyKey(c.req.header("idempotency-key"));
+    if (isStream && idempotencyKey) {
+      throw new BridgeError(
+        "invalid_request",
+        "Idempotency-Key is not supported for SSE streaming turns; use non-streaming mode for replayable retries",
+        false,
+      );
+    }
     const session = await sessionManager.get(id);
-    const request = {
+
+    const makeRequest = () => ({
       source: "rest" as const,
       model: { provider: session.provider, model: session.model, effort: session.effort },
       messages: [{
@@ -138,9 +164,10 @@ export function createBridgeApi(sessionManager: SessionManager, options: BridgeA
         createdAt: new Date().toISOString(),
       }],
       stream: isStream,
-    };
+    });
 
     if (isStream) {
+      const request = makeRequest();
       return streamSSE(c, async (stream) => {
         try {
           await sessionManager.send(id, request, {
@@ -156,21 +183,31 @@ export function createBridgeApi(sessionManager: SessionManager, options: BridgeA
       });
     }
 
-    const result = await sessionManager.send(id, request, {
-      signal: c.req.raw.signal,
-      emit: () => undefined,
-    });
-    return c.json({
-      turn_id: result.turnId,
-      session_id: result.sessionId,
-      status: result.status,
-      message: {
-        role: "assistant",
-        content: [{ type: "text", text: result.text }],
+    const { value: response, replayed } = await executeIdempotent(
+      idempotencyStore,
+      `POST:/sessions/${session.id}/messages`,
+      idempotencyKey,
+      body,
+      async () => {
+        const result = await sessionManager.send(id, makeRequest(), {
+          signal: c.req.raw.signal,
+          emit: () => undefined,
+        });
+        return {
+          turn_id: result.turnId,
+          session_id: result.sessionId,
+          status: result.status,
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: result.text }],
+          },
+          error: result.error,
+          usage: result.usage,
+        };
       },
-      error: result.error,
-      usage: result.usage,
-    });
+    );
+    if (replayed) c.header("idempotency-replayed", "true");
+    return c.json(response);
   });
 
   app.delete("/sessions/:id", async (c) => {
@@ -193,54 +230,63 @@ export function createBridgeApi(sessionManager: SessionManager, options: BridgeA
       throw new BridgeError("provider_unavailable", "Autonomous run controller is not configured", false);
     }
     const body = requireObject(await c.req.json(), "request body");
-    if (typeof body.objective !== "string" || !body.objective.trim()) {
-      throw new BridgeError("invalid_request", "objective is required", false);
-    }
-    const adapter = requireObject(body.agent_adapter, "agent_adapter");
-    if (typeof adapter.type !== "string") {
-      throw new BridgeError("invalid_request", "agent_adapter.type is required", false);
-    }
-    const command = Array.isArray(adapter.command) && adapter.command.every(value => typeof value === "string")
-      ? adapter.command as string[]
-      : undefined;
+    const { value: run, replayed } = await executeIdempotent(
+      idempotencyStore,
+      "POST:/runs",
+      c.req.header("idempotency-key"),
+      body,
+      async () => {
+        if (typeof body.objective !== "string" || !body.objective.trim()) {
+          throw new BridgeError("invalid_request", "objective is required", false);
+        }
+        const adapter = requireObject(body.agent_adapter, "agent_adapter");
+        if (typeof adapter.type !== "string") {
+          throw new BridgeError("invalid_request", "agent_adapter.type is required", false);
+        }
+        const command = Array.isArray(adapter.command) && adapter.command.every(value => typeof value === "string")
+          ? adapter.command as string[]
+          : undefined;
 
-    const chatgpt = body.chatgpt && typeof body.chatgpt === "object" && !Array.isArray(body.chatgpt)
-      ? body.chatgpt as Record<string, unknown>
-      : {};
-    let sessionId = typeof chatgpt.session_id === "string" ? chatgpt.session_id : undefined;
-    if (!sessionId) {
-      const model = typeof chatgpt.model === "string" ? chatgpt.model : options.defaultModel;
-      if (!model) {
-        throw new BridgeError(
-          "invalid_request",
-          "chatgpt.session_id or an explicit/default ChatGPT model is required",
-          false,
+        const chatgpt = body.chatgpt && typeof body.chatgpt === "object" && !Array.isArray(body.chatgpt)
+          ? body.chatgpt as Record<string, unknown>
+          : {};
+        let sessionId = typeof chatgpt.session_id === "string" ? chatgpt.session_id : undefined;
+        if (!sessionId) {
+          const model = typeof chatgpt.model === "string" ? chatgpt.model : options.defaultModel;
+          if (!model) {
+            throw new BridgeError(
+              "invalid_request",
+              "chatgpt.session_id or an explicit/default ChatGPT model is required",
+              false,
+            );
+          }
+          const session = await sessionManager.create({
+            provider: options.defaultProvider ?? "chatgpt-web",
+            model,
+            effort: typeof chatgpt.effort === "string" ? chatgpt.effort : undefined,
+          });
+          sessionId = session.id;
+        }
+
+        const budget = body.budget && typeof body.budget === "object" && !Array.isArray(body.budget)
+          ? body.budget as Record<string, unknown>
+          : {};
+        return await options.runController!.startRun(
+          sessionId,
+          body.objective as string,
+          adapter.type,
+          command,
+          {
+            maxRounds: typeof budget.max_rounds === "number" ? budget.max_rounds : undefined,
+            maxWallClockMs: typeof budget.max_wall_clock_ms === "number" ? budget.max_wall_clock_ms : undefined,
+            maxConsecutiveFailures: typeof budget.max_consecutive_failures === "number"
+              ? budget.max_consecutive_failures
+              : undefined,
+          },
         );
-      }
-      const session = await sessionManager.create({
-        provider: options.defaultProvider ?? "chatgpt-web",
-        model,
-        effort: typeof chatgpt.effort === "string" ? chatgpt.effort : undefined,
-      });
-      sessionId = session.id;
-    }
-
-    const budget = body.budget && typeof body.budget === "object" && !Array.isArray(body.budget)
-      ? body.budget as Record<string, unknown>
-      : {};
-    const run = await options.runController.startRun(
-      sessionId,
-      body.objective,
-      adapter.type,
-      command,
-      {
-        maxRounds: typeof budget.max_rounds === "number" ? budget.max_rounds : undefined,
-        maxWallClockMs: typeof budget.max_wall_clock_ms === "number" ? budget.max_wall_clock_ms : undefined,
-        maxConsecutiveFailures: typeof budget.max_consecutive_failures === "number"
-          ? budget.max_consecutive_failures
-          : undefined,
       },
     );
+    if (replayed) c.header("idempotency-replayed", "true");
     return c.json(run, 201);
   });
 
