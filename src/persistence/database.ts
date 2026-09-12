@@ -1,62 +1,56 @@
 import { Database } from "bun:sqlite";
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
+import { getConfigDir } from "../config";
 
 let db: Database | null = null;
 
 export function getDatabasePath(): string {
-  const home = os.homedir();
-  return path.join(home, ".agent-chatgpt-bridge", "state", "bridge.db");
+  return path.join(getConfigDir(), "state", "bridge.db");
 }
 
 export function initDatabase(dbPath: string = getDatabasePath()): Database {
   if (db) return db;
 
   const dir = path.dirname(dbPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(dir, 0o700); } catch { /* Windows ACLs are owned by the installer/runtime user. */ }
 
   db = new Database(dbPath);
-  
-  // Enable WAL and foreign keys
+  try { fs.chmodSync(dbPath, 0o600); } catch { /* Windows ACLs are owned by the installer/runtime user. */ }
+
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
-  
+
   runMigrations(db);
-  
   return db;
 }
 
 export function getDatabase(): Database {
-  if (!db) {
-    throw new Error("Database not initialized");
-  }
+  if (!db) throw new Error("Database not initialized");
   return db;
 }
 
-export function closeDatabase() {
+export function closeDatabase(): void {
   if (db) {
     db.close();
     db = null;
   }
 }
 
-function runMigrations(db: Database) {
-  // Create schema version table
-  db.exec(`
+function runMigrations(database: Database): void {
+  database.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY
     );
   `);
 
-  const currentVersionResult = db.query("SELECT MAX(version) as v FROM schema_migrations").get() as { v: number | null };
+  const currentVersionResult = database.query("SELECT MAX(version) as v FROM schema_migrations").get() as { v: number | null };
   const currentVersion = currentVersionResult?.v || 0;
 
   if (currentVersion < 1) {
-    db.transaction(() => {
-      db.exec(`
+    database.transaction(() => {
+      database.exec(`
         CREATE TABLE sessions (
           id TEXT PRIMARY KEY,
           name TEXT UNIQUE,
@@ -73,7 +67,7 @@ function runMigrations(db: Database) {
         );
       `);
 
-      db.exec(`
+      database.exec(`
         CREATE TABLE messages (
           id TEXT PRIMARY KEY,
           session_id TEXT NOT NULL,
@@ -85,7 +79,7 @@ function runMigrations(db: Database) {
         );
       `);
 
-      db.exec(`
+      database.exec(`
         CREATE TABLE turns (
           id TEXT PRIMARY KEY,
           request_id TEXT NOT NULL,
@@ -101,7 +95,7 @@ function runMigrations(db: Database) {
         );
       `);
 
-      db.exec(`
+      database.exec(`
         CREATE TABLE runs (
           id TEXT PRIMARY KEY,
           session_id TEXT NOT NULL,
@@ -118,7 +112,7 @@ function runMigrations(db: Database) {
         );
       `);
 
-      db.exec(`
+      database.exec(`
         CREATE TABLE run_events (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           run_id TEXT NOT NULL,
@@ -131,7 +125,7 @@ function runMigrations(db: Database) {
         );
       `);
 
-      db.exec(`
+      database.exec(`
         CREATE TABLE idempotency (
           key TEXT PRIMARY KEY,
           body_hash TEXT NOT NULL,
@@ -141,7 +135,7 @@ function runMigrations(db: Database) {
         );
       `);
 
-      db.exec(`
+      database.exec(`
         CREATE TABLE audit_events (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           event_type TEXT NOT NULL,
@@ -152,8 +146,8 @@ function runMigrations(db: Database) {
           created_at TEXT NOT NULL
         );
       `);
-      
-      db.exec(`INSERT INTO schema_migrations (version) VALUES (1)`);
+
+      database.exec("INSERT INTO schema_migrations (version) VALUES (1)");
     })();
   }
 }
