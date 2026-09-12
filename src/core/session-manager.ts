@@ -1,13 +1,17 @@
-import type { SessionStatus } from "./domain";
+import type {
+  BridgeContentPart,
+  BridgeMessage,
+  BridgeTurnRequest,
+  BridgeTurnResult,
+} from "./domain";
 import { generateSessionId, generateTurnId } from "./ids";
 import type { ConversationProvider } from "../providers/provider";
 import { SessionStore, type SessionData } from "../persistence/session-store";
 import { MessageStore, type MessageData } from "../persistence/message-store";
-import { TurnStore } from "../persistence/turn-store";
+import { TurnStore, type PersistedTurnStatus } from "../persistence/turn-store";
 import { BridgeError } from "./errors";
 import { Mutex } from "./mutex";
 import type { BridgeEvent } from "./events";
-import type { BridgeTurnRequest } from "./domain";
 
 export interface CreateSessionParams {
   name?: string;
@@ -17,152 +21,313 @@ export interface CreateSessionParams {
   metadata?: Record<string, unknown>;
 }
 
+interface ActiveTurn {
+  turnId: string;
+  controller: AbortController;
+  provider: ConversationProvider;
+}
+
+function parseMessage(row: MessageData): BridgeMessage {
+  let content: BridgeContentPart[];
+  let metadata: Record<string, unknown> | undefined;
+  try {
+    content = JSON.parse(row.contentJson) as BridgeContentPart[];
+  } catch (error) {
+    throw new BridgeError(
+      "session_history_corrupt",
+      `Stored message ${row.id} has invalid content JSON: ${error instanceof Error ? error.message : String(error)}`,
+      false,
+    );
+  }
+  if (!Array.isArray(content)) {
+    throw new BridgeError("session_history_corrupt", `Stored message ${row.id} content is not an array`, false);
+  }
+  if (row.metadataJson) {
+    try {
+      metadata = JSON.parse(row.metadataJson) as Record<string, unknown>;
+    } catch (error) {
+      throw new BridgeError(
+        "session_history_corrupt",
+        `Stored message ${row.id} has invalid metadata JSON: ${error instanceof Error ? error.message : String(error)}`,
+        false,
+      );
+    }
+  }
+  if (row.role !== "system" && row.role !== "user" && row.role !== "assistant" && row.role !== "tool") {
+    throw new BridgeError("session_history_corrupt", `Stored message ${row.id} has invalid role ${row.role}`, false);
+  }
+  return {
+    id: row.id,
+    role: row.role,
+    content,
+    createdAt: row.createdAt,
+    metadata,
+  };
+}
+
+function persistedStatus(result: BridgeTurnResult): PersistedTurnStatus {
+  return result.status;
+}
+
 export class SessionManager {
-  private sessionLocks = new Map<string, Mutex>();
+  private readonly sessionLocks = new Map<string, Mutex>();
+  private readonly activeTurns = new Map<string, ActiveTurn>();
 
   constructor(
-    private sessionStore: SessionStore,
-    private messageStore: MessageStore,
-    private turnStore: TurnStore,
-    private providers: Record<string, ConversationProvider>
+    private readonly sessionStore: SessionStore,
+    private readonly messageStore: MessageStore,
+    private readonly turnStore: TurnStore,
+    private readonly providers: Record<string, ConversationProvider>,
   ) {}
 
   private getLock(sessionId: string): Mutex {
-    if (!this.sessionLocks.has(sessionId)) {
-      this.sessionLocks.set(sessionId, new Mutex());
+    let lock = this.sessionLocks.get(sessionId);
+    if (!lock) {
+      lock = new Mutex();
+      this.sessionLocks.set(sessionId, lock);
     }
-    return this.sessionLocks.get(sessionId)!;
+    return lock;
+  }
+
+  private providerFor(session: SessionData): ConversationProvider {
+    const provider = this.providers[session.provider];
+    if (!provider) {
+      throw new BridgeError("provider_unavailable", `Provider ${session.provider} is not configured`, false);
+    }
+    return provider;
+  }
+
+  private async resolveSession(idOrName: string): Promise<SessionData> {
+    const session = this.sessionStore.get(idOrName) ?? this.sessionStore.getByName(idOrName);
+    if (!session) throw new BridgeError("session_not_found", `Session ${idOrName} not found`, false);
+    return session;
   }
 
   async create(params: CreateSessionParams): Promise<SessionData> {
-    const id = generateSessionId();
+    const provider = this.providers[params.provider];
+    if (!provider) {
+      throw new BridgeError("provider_unavailable", `Provider ${params.provider} is not configured`, false);
+    }
+
+    const capabilities = await provider.capabilities();
+    if (capabilities.models.length > 0 && !capabilities.models.includes(params.model)) {
+      throw new BridgeError(
+        "model_unavailable",
+        `Model ${params.model} is not available from provider ${params.provider}`,
+        false,
+      );
+    }
+
+    if (params.name && this.sessionStore.getByName(params.name)) {
+      throw new BridgeError("session_conflict", `Session name ${params.name} already exists`, false);
+    }
+
+    const now = new Date().toISOString();
     const session: SessionData = {
-      id,
+      id: generateSessionId(),
       name: params.name,
       provider: params.provider,
       model: params.model,
       effort: params.effort,
-      status: "created",
+      status: "ready",
       conversationEpoch: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      continuityMode: "new",
+      createdAt: now,
+      updatedAt: now,
       metadata: params.metadata,
     };
     this.sessionStore.create(session);
     return session;
   }
 
-  async get(id: string): Promise<SessionData> {
-    const session = this.sessionStore.get(id);
-    if (!session) throw new BridgeError("session_not_found", `Session ${id} not found`, false);
-    return session;
+  async get(idOrName: string): Promise<SessionData> {
+    return this.resolveSession(idOrName);
   }
 
   async list(): Promise<SessionData[]> {
-    const db = require("../persistence/database").getDatabase();
-    const rows = db.query("SELECT * FROM sessions ORDER BY created_at DESC").all();
-    return rows.map((row: any) => ({
-      id: row.id,
-      name: row.name,
-      provider: row.provider,
-      model: row.model,
-      effort: row.effort,
-      status: row.status,
-      conversationEpoch: row.conversation_epoch,
-      continuityMode: row.continuity_mode,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      lastTurnAt: row.last_turn_at,
-      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
-    }));
+    return this.sessionStore.list();
+  }
+
+  async transcript(idOrName: string): Promise<BridgeMessage[]> {
+    const session = await this.resolveSession(idOrName);
+    return this.messageStore.listBySession(session.id).map(parseMessage);
   }
 
   async send(
-    sessionId: string,
+    idOrName: string,
     request: Omit<BridgeTurnRequest, "sessionId" | "requestId"> & { requestId?: string },
-    ctx: { signal?: AbortSignal, emit: (event: BridgeEvent) => void }
-  ) {
-    const lock = this.getLock(sessionId);
-    const unlock = await lock.acquire();
-    
+    ctx: { signal?: AbortSignal; emit: (event: BridgeEvent) => void },
+  ): Promise<BridgeTurnResult> {
+    const initialSession = await this.resolveSession(idOrName);
+    const sessionId = initialSession.id;
+    const unlock = await this.getLock(sessionId).acquire();
+    let turnId: string | undefined;
+    let externalAbort: (() => void) | undefined;
+
     try {
-      const session = await this.get(sessionId);
-      if (session.status === "closed") {
-        throw new BridgeError("session_closed", `Session ${sessionId} is closed`);
+      if (ctx.signal?.aborted) {
+        throw new BridgeError("client_cancelled", "Turn was cancelled before execution", false);
       }
 
-      this.sessionStore.update(sessionId, { status: "busy", lastTurnAt: new Date().toISOString() });
-      const provider = this.providers[session.provider];
-      if (!provider) {
-        throw new BridgeError("invalid_model", `Provider ${session.provider} not found`);
+      const session = await this.resolveSession(sessionId);
+      if (session.status === "closed" || session.status === "closing") {
+        throw new BridgeError("session_closed", `Session ${sessionId} is closed`, false);
       }
+      if (session.status === "error") {
+        throw new BridgeError("session_error", `Session ${sessionId} is in an error state`, false);
+      }
+
+      const provider = this.providerFor(session);
+      const currentMessages = request.messages;
+      const history = this.messageStore.listBySession(sessionId).map(parseMessage);
+      turnId = request.requestId || generateTurnId();
 
       const turnReq: BridgeTurnRequest = {
         ...request,
         sessionId,
-        requestId: request.requestId || generateTurnId(),
+        requestId: turnId,
+        // The session is authoritative for provider/model selection. A protocol caller may not
+        // silently move an existing conversation to another model or provider.
+        model: {
+          provider: session.provider,
+          model: session.model,
+          effort: session.effort,
+        },
+        messages: [...history, ...currentMessages],
+        incrementalMessages: currentMessages,
       };
 
-      // Create turn record
+      const controller = new AbortController();
+      if (ctx.signal) {
+        externalAbort = () => controller.abort(ctx.signal?.reason);
+        ctx.signal.addEventListener("abort", externalAbort, { once: true });
+      }
+      this.activeTurns.set(sessionId, { turnId, controller, provider });
+
+      const startedAt = new Date().toISOString();
       this.turnStore.create({
-        id: turnReq.requestId,
-        requestId: turnReq.requestId,
+        id: turnId,
+        requestId: turnId,
         sessionId,
-        status: "started",
+        status: "running",
         source: request.source,
-        startedAt: new Date().toISOString(),
+        startedAt,
       });
+      this.sessionStore.update(sessionId, { status: "busy", lastTurnAt: startedAt });
 
-      const result = await provider.runTurn(turnReq, ctx);
-
-      // Append user messages and assistant result
-      for (const msg of request.messages) {
-        this.messageStore.create({
-          id: msg.id,
-          sessionId,
-          role: msg.role,
-          contentJson: JSON.stringify(msg.content),
-          createdAt: msg.createdAt,
-          metadataJson: msg.metadata ? JSON.stringify(msg.metadata) : undefined,
+      let result: BridgeTurnResult;
+      try {
+        result = await provider.runTurn(turnReq, {
+          signal: controller.signal,
+          emit: ctx.emit,
         });
+      } catch (error) {
+        const cancelled = controller.signal.aborted
+          || (error instanceof DOMException && error.name === "AbortError");
+        this.turnStore.update(turnId, {
+          status: cancelled ? "cancelled" : "failed",
+          completedAt: new Date().toISOString(),
+          errorCode: cancelled ? "client_cancelled" : "provider_exception",
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
       }
 
+      this.turnStore.update(turnId, {
+        status: persistedStatus(result),
+        completedAt: new Date().toISOString(),
+        errorCode: result.error?.code,
+        errorMessage: result.error?.message,
+        usageJson: result.usage ? JSON.stringify(result.usage) : undefined,
+      });
+
+      // Only a completed provider turn becomes canonical session history. A failed or ambiguous
+      // turn is retained in the turn/audit record but never contaminates reconstruction history.
       if (result.status === "completed") {
+        for (const message of currentMessages) {
+          this.messageStore.create({
+            id: message.id,
+            sessionId,
+            role: message.role,
+            contentJson: JSON.stringify(message.content),
+            createdAt: message.createdAt,
+            metadataJson: message.metadata ? JSON.stringify(message.metadata) : undefined,
+          });
+        }
         this.messageStore.create({
           id: `msg_${result.turnId}`,
           sessionId,
           role: "assistant",
           contentJson: JSON.stringify([{ type: "text", text: result.text }]),
           createdAt: new Date().toISOString(),
+          metadataJson: result.providerMetadata ? JSON.stringify(result.providerMetadata) : undefined,
         });
       }
 
-      this.sessionStore.update(sessionId, { status: "ready" });
       return result;
-    } catch (e) {
-      this.sessionStore.update(sessionId, { status: "ready" });
-      throw e;
+    } finally {
+      if (externalAbort && ctx.signal) ctx.signal.removeEventListener("abort", externalAbort);
+      const active = this.activeTurns.get(sessionId);
+      if (!turnId || active?.turnId === turnId) this.activeTurns.delete(sessionId);
+
+      const latest = this.sessionStore.get(sessionId);
+      if (latest && latest.status !== "closed" && latest.status !== "closing") {
+        this.sessionStore.update(sessionId, { status: "ready" });
+      }
+      unlock();
+    }
+  }
+
+  async cancel(idOrName: string, turnId: string = "latest"): Promise<boolean> {
+    const session = await this.resolveSession(idOrName);
+    if (session.status === "closed") {
+      throw new BridgeError("session_closed", `Session ${session.id} is closed`, false);
+    }
+
+    const active = this.activeTurns.get(session.id);
+    if (!active) return false;
+    if (turnId !== "latest" && turnId !== active.turnId) {
+      throw new BridgeError(
+        "turn_not_active",
+        `Turn ${turnId} is not the active turn for session ${session.id}`,
+        false,
+      );
+    }
+
+    const reason = new DOMException("Bridge turn cancelled", "AbortError");
+    if (!active.controller.signal.aborted) active.controller.abort(reason);
+    if (active.provider.cancelTurn) {
+      await active.provider.cancelTurn(session.id, active.turnId).catch(() => undefined);
+    }
+    return true;
+  }
+
+  async close(idOrName: string): Promise<void> {
+    const session = await this.resolveSession(idOrName);
+    if (session.status === "closed") return;
+
+    this.sessionStore.update(session.id, { status: "closing" });
+    const active = this.activeTurns.get(session.id);
+    if (active && !active.controller.signal.aborted) {
+      active.controller.abort(new DOMException("Bridge session closed", "AbortError"));
+      if (active.provider.cancelTurn) {
+        await active.provider.cancelTurn(session.id, active.turnId).catch(() => undefined);
+      }
+    }
+
+    // Wait for an active send() to settle and release its browser/session ownership before closing.
+    const unlock = await this.getLock(session.id).acquire();
+    try {
+      const provider = this.providerFor(session);
+      if (provider.closeSession) await provider.closeSession(session.id);
+      this.sessionStore.update(session.id, { status: "closed" });
+      this.activeTurns.delete(session.id);
     } finally {
       unlock();
     }
   }
 
-  async cancel(sessionId: string, turnId: string) {
-    const session = await this.get(sessionId);
-    if (session.status === "closed") throw new BridgeError("session_closed", `Session closed`);
-    const provider = this.providers[session.provider];
-    if (provider?.cancelTurn) {
-      await provider.cancelTurn(sessionId, turnId);
-    }
-  }
-
-  async close(sessionId: string) {
-    const session = await this.get(sessionId);
-    if (session.status === "closed") return;
-    const provider = this.providers[session.provider];
-    if (provider?.closeSession) {
-      await provider.closeSession(sessionId);
-    }
-    this.sessionStore.update(sessionId, { status: "closed" });
+  recoverInterruptedTurns(): number {
+    return this.turnStore.markInterruptedTurnsFailed();
   }
 }
