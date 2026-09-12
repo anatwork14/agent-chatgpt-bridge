@@ -1,61 +1,123 @@
-import type { BridgeTurnRequest, BridgeMessage, BridgeContentPart, BridgeToolDefinition } from "../../core/domain";
-import type { CodexParsedRequest, CodexContentPart, CodexTool, CodexMessage, CodexRequestOptions } from "../../types";
+import type {
+  BridgeTurnRequest,
+  BridgeMessage,
+  BridgeContentPart,
+} from "../../core/domain";
+import type {
+  CodexParsedRequest,
+  CodexContentPart,
+  CodexTool,
+  CodexMessage,
+  CodexRequestOptions,
+  CodexAssistantContentPart,
+} from "../../types";
+
+function timestampOf(message: BridgeMessage): number {
+  const parsed = Date.parse(message.createdAt);
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
 
 export function bridgeContentPartToCodex(part: BridgeContentPart): CodexContentPart {
-  if (part.type === "text") {
-    return { type: "text", text: part.text };
-  }
+  if (part.type === "text") return { type: "text", text: part.text };
+
   if (part.type === "image") {
+    if (part.source.type !== "data_url") {
+      throw new Error(
+        "Local-file image attachments must be validated and converted to a data URL before Codex compatibility translation",
+      );
+    }
     return {
       type: "image",
-      imageUrl: part.source.type === "data_url" ? part.source.dataUrl : part.source.path, // or uri
+      imageUrl: part.source.dataUrl,
       detail: part.detail || "auto",
     };
   }
-  if (part.type === "resource") {
-    return { type: "text", text: `Resource attached: ${part.uri}` }; // fallback
-  }
-  return { type: "text", text: JSON.stringify(part) };
+
+  return {
+    type: "text",
+    text: part.name ? `Resource ${part.name}: ${part.uri}` : `Resource: ${part.uri}`,
+  };
 }
 
-export function bridgeMessageToCodex(msg: BridgeMessage): CodexMessage {
-  const content = msg.content.map(bridgeContentPartToCodex);
-  if (msg.role === "assistant") {
-    return { role: "assistant", content: content as any, timestamp: Date.now() }; // simplify for shim
+function assistantContent(message: BridgeMessage): CodexAssistantContentPart[] {
+  return message.content.map(part => {
+    if (part.type === "text") return { type: "text", text: part.text };
+    if (part.type === "resource") {
+      return {
+        type: "text",
+        text: part.name ? `Resource ${part.name}: ${part.uri}` : `Resource: ${part.uri}`,
+      };
+    }
+    throw new Error("Assistant image history is not supported by the Codex compatibility shim");
+  });
+}
+
+export function bridgeMessageToCodex(message: BridgeMessage): CodexMessage {
+  const timestamp = timestampOf(message);
+
+  if (message.role === "assistant") {
+    return { role: "assistant", content: assistantContent(message), timestamp };
   }
-  if (msg.role === "tool") {
+
+  const content = message.content.map(bridgeContentPartToCodex);
+
+  if (message.role === "tool") {
     return {
       role: "toolResult",
-      toolCallId: (msg.metadata?.toolCallId as string) || "unknown",
-      toolName: (msg.metadata?.toolName as string) || "unknown",
+      toolCallId: typeof message.metadata?.toolCallId === "string" ? message.metadata.toolCallId : "unknown",
+      toolName: typeof message.metadata?.toolName === "string" ? message.metadata.toolName : "unknown",
       content,
-      isError: false,
-      timestamp: Date.now(),
+      isError: message.metadata?.isError === true,
+      timestamp,
     };
   }
-  // User or system
-  if (msg.role === "system") {
-      return { role: "developer", content, timestamp: Date.now() };
+
+  if (message.role === "system") {
+    return { role: "developer", content, timestamp };
   }
-  return { role: "user", content, timestamp: Date.now() };
+
+  return { role: "user", content, timestamp };
+}
+
+function systemPrompt(messages: BridgeMessage[]): string[] | undefined {
+  const prompts = messages
+    .filter(message => message.role === "system")
+    .map(message => message.content
+      .filter((part): part is Extract<BridgeContentPart, { type: "text" }> => part.type === "text")
+      .map(part => part.text)
+      .join("\n"))
+    .filter(Boolean);
+  return prompts.length > 0 ? prompts : undefined;
 }
 
 export function bridgeTurnRequestToCodexParsedRequest(bridgeReq: BridgeTurnRequest): CodexParsedRequest {
-  const messages: CodexMessage[] = bridgeReq.messages.map(bridgeMessageToCodex);
-  const tools: CodexTool[] = (bridgeReq.tools || []).map(t => ({
-    name: t.name,
-    description: t.description || "",
-    inputSchema: t.inputSchema,
-    namespace: t.namespace,
+  // System messages become the canonical Codex system prompt only; duplicating them as developer
+  // history changes semantics and inflates every reconstructed generic session.
+  const messages: CodexMessage[] = bridgeReq.messages
+    .filter(message => message.role !== "system")
+    .map(bridgeMessageToCodex);
+
+  const tools: CodexTool[] = (bridgeReq.tools || []).map(tool => ({
+    name: tool.name,
+    description: tool.description || "",
+    parameters: tool.inputSchema || { type: "object", properties: {} },
+    namespace: tool.namespace,
+    freeform: tool.mode === "freeform" ? true : undefined,
   }));
 
-  const options: CodexRequestOptions = (bridgeReq.metadata?.options as CodexRequestOptions) || {};
-  if (bridgeReq.output && bridgeReq.output.type === "json_schema" && bridgeReq.output.schema) {
-      options.outputFormat = {
-          type: "json_schema",
-          name: "output",
-          schema: bridgeReq.output.schema
-      };
+  const options: CodexRequestOptions = {
+    ...((bridgeReq.metadata?.options as CodexRequestOptions | undefined) || {}),
+  };
+  if (bridgeReq.model.effort && options.reasoning === undefined) {
+    options.reasoning = bridgeReq.model.effort;
+  }
+  if (bridgeReq.output?.type === "json_schema" && bridgeReq.output.schema) {
+    options.outputFormat = {
+      type: "json_schema",
+      name: "bridge_output",
+      strict: true,
+      schema: bridgeReq.output.schema,
+    };
   }
 
   return {
@@ -63,8 +125,8 @@ export function bridgeTurnRequestToCodexParsedRequest(bridgeReq: BridgeTurnReque
     stream: bridgeReq.stream,
     context: {
       messages,
-      tools,
-      systemPrompt: bridgeReq.messages.filter(m => m.role === "system").map(m => m.content[0]?.type === "text" ? m.content[0].text : ""),
+      tools: tools.length > 0 ? tools : undefined,
+      systemPrompt: systemPrompt(bridgeReq.messages),
     },
     options,
   };
