@@ -22,7 +22,7 @@ Usage:
   agent-chatgpt session show SESSION [--json]
   agent-chatgpt session transcript SESSION [--json]
   agent-chatgpt session close SESSION [--json]
-  agent-chatgpt ask [--session SESSION] [--stdin] [--json] [MESSAGE]
+  agent-chatgpt ask [--session SESSION] [--stdin] [--quiet-session] [--json] [MESSAGE]
   agent-chatgpt run --objective TEXT --agent-command PATH [--session SESSION]
                     [--max-rounds N] [--max-wall-clock-ms N] [--json]
   agent-chatgpt run show RUN_ID [--json]
@@ -192,6 +192,7 @@ async function sessionCommand(args: string[], client: ClientConfig, json: boolea
 async function askCommand(args: string[], client: ClientConfig, json: boolean): Promise<void> {
   let sessionId = takeOption(args, "--session");
   const fromStdin = takeFlag(args, "--stdin");
+  const quietSession = takeFlag(args, "--quiet-session");
   const prompt = fromStdin ? await readStdin() : args.join(" ").trim();
   if (!prompt) throw new Error("ask requires MESSAGE or --stdin");
 
@@ -219,9 +220,7 @@ async function askCommand(args: string[], client: ClientConfig, json: boolean): 
     const text = result?.message?.content?.find((part: any) => part?.type === "text")?.text;
     if (typeof text === "string") stdout.write(`${text}\n`);
     else print(result, true);
-    if (!takeFlag(args, "--quiet-session")) {
-      process.stderr.write(`session: ${sessionId}\n`);
-    }
+    if (!quietSession) process.stderr.write(`session: ${sessionId}\n`);
   }
 }
 
