@@ -101,8 +101,9 @@ export async function createBridgeRuntime(
   );
   const recoveredInterruptedTurns = sessionManager.recoverInterruptedTurns();
 
+  const runStore = new RunStore();
   const runController = new RunController(
-    new RunStore(),
+    runStore,
     sessionManager,
     new AuditStore(),
     (id, command) => {
@@ -129,6 +130,7 @@ export async function createBridgeRuntime(
     defaultModel,
     listModels: async () => [...(await provider.capabilities()).models],
     runController,
+    listRuns: () => runStore.list(),
   });
   const mcp = new AgentChatGptMcpServer(sessionManager, {
     defaultProvider: provider.name,
