@@ -369,7 +369,7 @@ export function createResponsesApi(sessionManager: SessionManager, options: Resp
       let session;
       if (parsed.previousResponseId) {
         const priorTurn = options.turnStore.get(turnIdFromResponseId(parsed.previousResponseId));
-        if (!priorTurn) {
+        if (!priorTurn || priorTurn.source !== "responses") {
           throw new BridgeError(
             "invalid_request",
             `previous_response_id was not found: ${parsed.previousResponseId}`,
