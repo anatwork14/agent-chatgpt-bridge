@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 import { stdin, stdout } from "node:process";
 import { loadConfig } from "../config";
-import { closeDatabase } from "../persistence/database";
 import {
   bridgeApiToken,
   createBridgeRuntime,
@@ -137,14 +136,44 @@ async function serveCommand(portOverride?: number): Promise<void> {
   );
 
   let stopping = false;
+  let resolveStopped!: () => void;
+  let rejectStopped!: (error: Error) => void;
+  const stopped = new Promise<void>((resolve, reject) => {
+    resolveStopped = resolve;
+    rejectStopped = reject;
+  });
+
   const stop = () => {
     if (stopping) return;
     stopping = true;
-    void server.stop(true).finally(() => closeDatabase());
+    void (async () => {
+      const failures: unknown[] = [];
+      try {
+        await server.stop(true);
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await runtime.close();
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length > 0) {
+        rejectStopped(new AggregateError(failures, "agent-chatgpt shutdown failed"));
+      } else {
+        resolveStopped();
+      }
+    })();
   };
+
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
-  await new Promise<void>(() => {});
+  try {
+    await stopped;
+  } finally {
+    process.off("SIGINT", stop);
+    process.off("SIGTERM", stop);
+  }
 }
 
 async function sessionCommand(args: string[], client: ClientConfig, json: boolean): Promise<void> {
@@ -291,7 +320,11 @@ async function main(): Promise<void> {
   if (command === "mcp") {
     assertNoArgs(args);
     const runtime = await createBridgeRuntime(loadConfig(), { port: portOverride });
-    await runtime.mcp.run();
+    try {
+      await runtime.mcp.run();
+    } finally {
+      await runtime.close();
+    }
     return;
   }
 
