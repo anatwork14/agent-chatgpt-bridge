@@ -63,7 +63,11 @@ function writeConfig(home: string): void {
   writeFileSync(join(home, "config.json"), `${JSON.stringify(config, null, 2)}\n`);
 }
 
-async function runSmoke(home: string, port: number): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+async function runSmoke(
+  home: string,
+  port: number,
+  extraEnv: Record<string, string> = {},
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const script = resolve(import.meta.dir, "../../../scripts/smoke-live-bridge-codex-router.ts");
   const child = Bun.spawn([process.execPath, script], {
     env: {
@@ -73,6 +77,7 @@ async function runSmoke(home: string, port: number): Promise<{ exitCode: number;
       AGENT_CHATGPT_CODEX_ROUTER_BASE_URL: ROUTER_BASE_URL,
       AGENT_CHATGPT_CODEX_ROUTER_SMOKE_MODEL: ROUTER_MODEL,
       AGENT_CHATGPT_CODEX_ROUTER_SMOKE_TIMEOUT_MS: "10000",
+      ...extraEnv,
     },
     stdin: "ignore",
     stdout: "pipe",
@@ -88,6 +93,37 @@ async function runSmoke(home: string, port: number): Promise<{ exitCode: number;
 
 function authenticated(request: Request): boolean {
   return request.headers.get("authorization") === `Bearer ${apiToken()}`;
+}
+
+function newSession(
+  sessions: Map<string, SessionState>,
+  id: string,
+  model: string,
+): SessionState {
+  const state: SessionState = {
+    id,
+    provider: "model-router",
+    model,
+    transcript: [],
+  };
+  sessions.set(id, state);
+  return state;
+}
+
+function completedTurn(session: SessionState, prompt: string): Response {
+  session.transcript.push({ role: "user", content: [{ type: "text", text: prompt }] });
+  const discovered = prompt.match(/BRIDGE_ROUTER_SMOKE_[A-Z0-9]+/)?.[0];
+  if (discovered) session.marker = discovered;
+  const text = session.model.startsWith("codex-router/")
+    ? session.marker || "bridge smoke acknowledgement"
+    : "chatgpt coexistence acknowledgement";
+  session.transcript.push({ role: "assistant", content: [{ type: "text", text }] });
+  return Response.json({
+    turn_id: `turn_${session.transcript.length}`,
+    session_id: session.id,
+    status: "completed",
+    message: { role: "assistant", content: [{ type: "text", text }] },
+  });
 }
 
 test("live bridge codex-router smoke verifies routed continuity through public REST surfaces", async () => {
@@ -110,14 +146,7 @@ test("live bridge codex-router smoke verifies routed continuity through public R
       }
       if (url.pathname === "/bridge/v1/sessions" && request.method === "POST") {
         const body = await request.json() as { model?: string };
-        const id = `session_live_smoke_${nextSession++}`;
-        const state: SessionState = {
-          id,
-          provider: "model-router",
-          model: body.model || CHATGPT_MODEL,
-          transcript: [],
-        };
-        sessions.set(id, state);
+        const state = newSession(sessions, `session_live_smoke_${nextSession++}`, body.model || CHATGPT_MODEL);
         return Response.json(state, { status: 201 });
       }
 
@@ -139,17 +168,7 @@ test("live bridge codex-router smoke verifies routed continuity through public R
       if (suffix === "/messages" && request.method === "POST") {
         const body = await request.json() as { content?: Array<{ type?: string; text?: string }> };
         const prompt = body.content?.find(part => part.type === "text")?.text || "";
-        session.transcript.push({ role: "user", content: [{ type: "text", text: prompt }] });
-        const discovered = prompt.match(/BRIDGE_ROUTER_SMOKE_[A-Z0-9]+/)?.[0];
-        if (discovered) session.marker = discovered;
-        const text = session.marker || "bridge smoke acknowledgement";
-        session.transcript.push({ role: "assistant", content: [{ type: "text", text }] });
-        return Response.json({
-          turn_id: `turn_${session.transcript.length}`,
-          session_id: id,
-          status: "completed",
-          message: { role: "assistant", content: [{ type: "text", text }] },
-        });
+        return completedTurn(session, prompt);
       }
       if (suffix === "/cancel" && request.method === "POST") {
         return Response.json({ success: true, cancelled: false });
@@ -167,6 +186,95 @@ test("live bridge codex-router smoke verifies routed continuity through public R
     expect(result.stdout).toContain("continuity=passed");
     expect(result.stdout).toContain("capability_leak=none");
     expect(result.stdout).not.toContain(ROUTER_SECRET);
+    expect(sessions.size).toBe(0);
+  } finally {
+    bridge.stop(true);
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 20_000);
+
+test("live bridge smoke exercises optional cancellation and ChatGPT Web coexistence paths", async () => {
+  const home = mkdtempSync(join(tmpdir(), "agent-chatgpt-live-smoke-optional-"));
+  writeConfig(home);
+  const sessions = new Map<string, SessionState>();
+  const pendingCancellation = new Map<string, (response: Response) => void>();
+  let nextSession = 1;
+
+  const bridge = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      if (!authenticated(request)) return Response.json({ error: { code: "authentication_required" } }, { status: 401 });
+      const url = new URL(request.url);
+      if (url.pathname === "/bridge/v1/healthz") {
+        return Response.json({ status: "ok", service: "agent-chatgpt-bridge" });
+      }
+      if (url.pathname === "/bridge/v1/models") {
+        return Response.json({ models: [CHATGPT_MODEL, ROUTER_MODEL] });
+      }
+      if (url.pathname === "/bridge/v1/sessions" && request.method === "POST") {
+        const body = await request.json() as { model?: string };
+        const state = newSession(sessions, `session_live_smoke_optional_${nextSession++}`, body.model || CHATGPT_MODEL);
+        return Response.json(state, { status: 201 });
+      }
+
+      const match = url.pathname.match(/^\/bridge\/v1\/sessions\/([^/]+)(\/messages|\/cancel)?$/);
+      if (!match) return new Response("not found", { status: 404 });
+      const id = decodeURIComponent(match[1]!);
+      const suffix = match[2] || "";
+      const session = sessions.get(id);
+      if (!session) return Response.json({ error: { code: "session_not_found" } }, { status: 404 });
+
+      if (!suffix && request.method === "GET") return Response.json(session);
+      if (!suffix && request.method === "DELETE") {
+        sessions.delete(id);
+        return Response.json({ success: true });
+      }
+      if (suffix === "/messages" && request.method === "GET") {
+        return Response.json(session.transcript);
+      }
+      if (suffix === "/messages" && request.method === "POST") {
+        const body = await request.json() as { content?: Array<{ type?: string; text?: string }> };
+        const prompt = body.content?.find(part => part.type === "text")?.text || "";
+        if (prompt === "HOLD_FOR_CANCELLATION") {
+          session.transcript.push({ role: "user", content: [{ type: "text", text: prompt }] });
+          return await new Promise<Response>(resolveResponse => {
+            pendingCancellation.set(id, resolveResponse);
+          });
+        }
+        return completedTurn(session, prompt);
+      }
+      if (suffix === "/cancel" && request.method === "POST") {
+        const pending = pendingCancellation.get(id);
+        if (!pending) return Response.json({ success: true, cancelled: false });
+        pendingCancellation.delete(id);
+        pending(Response.json({
+          turn_id: `turn_cancel_${id}`,
+          session_id: id,
+          status: "cancelled",
+          message: { role: "assistant", content: [{ type: "text", text: "" }] },
+          error: { code: "client_cancelled", message: "cancelled", retryable: false },
+        }));
+        return Response.json({ success: true, cancelled: true });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
+
+  try {
+    const result = await runSmoke(home, bridge.port, {
+      AGENT_CHATGPT_CODEX_ROUTER_SMOKE_CANCEL: "1",
+      AGENT_CHATGPT_CODEX_ROUTER_SMOKE_CANCEL_DELAY_MS: "20",
+      AGENT_CHATGPT_CODEX_ROUTER_SMOKE_CANCEL_PROMPT: "HOLD_FOR_CANCELLATION",
+      AGENT_CHATGPT_CODEX_ROUTER_SMOKE_CHATGPT: "1",
+      AGENT_CHATGPT_CODEX_ROUTER_SMOKE_CHATGPT_MODEL: CHATGPT_MODEL,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("cancellation=passed");
+    expect(result.stdout).toContain("coexistence=passed");
+    expect(result.stdout).not.toContain(ROUTER_SECRET);
+    expect(pendingCancellation.size).toBe(0);
     expect(sessions.size).toBe(0);
   } finally {
     bridge.stop(true);
