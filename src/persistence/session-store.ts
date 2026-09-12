@@ -1,4 +1,5 @@
 import { getDatabase } from "./database";
+import type { SessionStatus } from "../core/domain";
 
 export interface SessionData {
   id: string;
@@ -6,7 +7,7 @@ export interface SessionData {
   provider: string;
   model: string;
   effort?: string;
-  status: "active" | "closed";
+  status: SessionStatus;
   conversationEpoch: number;
   continuityMode?: string;
   createdAt: string;
@@ -15,8 +16,25 @@ export interface SessionData {
   metadata?: Record<string, unknown>;
 }
 
+function mapSessionRow(row: any): SessionData {
+  return {
+    id: row.id,
+    name: row.name ?? undefined,
+    provider: row.provider,
+    model: row.model,
+    effort: row.effort ?? undefined,
+    status: row.status,
+    conversationEpoch: row.conversation_epoch,
+    continuityMode: row.continuity_mode ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    lastTurnAt: row.last_turn_at ?? undefined,
+    metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
+  };
+}
+
 export class SessionStore {
-  create(session: SessionData) {
+  create(session: SessionData): void {
     const db = getDatabase();
     db.prepare(`
       INSERT INTO sessions (id, name, provider, model, effort, status, conversation_epoch, continuity_mode, created_at, updated_at, last_turn_at, metadata_json)
@@ -38,31 +56,26 @@ export class SessionStore {
   }
 
   get(id: string): SessionData | null {
-    const db = getDatabase();
-    const row = db.query("SELECT * FROM sessions WHERE id = ?").get(id) as any;
-    if (!row) return null;
-    return {
-      id: row.id,
-      name: row.name,
-      provider: row.provider,
-      model: row.model,
-      effort: row.effort,
-      status: row.status,
-      conversationEpoch: row.conversation_epoch,
-      continuityMode: row.continuity_mode,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      lastTurnAt: row.last_turn_at,
-      metadata: row.metadata_json ? JSON.parse(row.metadata_json) : undefined,
-    };
+    const row = getDatabase().query("SELECT * FROM sessions WHERE id = ?").get(id) as any;
+    return row ? mapSessionRow(row) : null;
   }
 
-  update(id: string, updates: Partial<SessionData>) {
+  getByName(name: string): SessionData | null {
+    const row = getDatabase().query("SELECT * FROM sessions WHERE name = ?").get(name) as any;
+    return row ? mapSessionRow(row) : null;
+  }
+
+  list(): SessionData[] {
+    const rows = getDatabase().query("SELECT * FROM sessions ORDER BY updated_at DESC").all() as any[];
+    return rows.map(mapSessionRow);
+  }
+
+  update(id: string, updates: Partial<SessionData>): void {
     const db = getDatabase();
     const current = this.get(id);
     if (!current) throw new Error("Session not found");
     const merged = { ...current, ...updates, updatedAt: new Date().toISOString() };
-    
+
     db.prepare(`
       UPDATE sessions SET
         name = ?, provider = ?, model = ?, effort = ?, status = ?, conversation_epoch = ?, continuity_mode = ?, updated_at = ?, last_turn_at = ?, metadata_json = ?
