@@ -9,18 +9,9 @@ import { SessionStore } from "../persistence/session-store";
 import { MessageStore } from "../persistence/message-store";
 import { TurnStore } from "../persistence/turn-store";
 import type { ExternalAgentAdapter, AgentDecision } from "./domain";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-
-const testDbPath = path.join(os.tmpdir(), `test-bridge-run-${Date.now()}.db`);
 
 afterEach(() => {
   closeDatabase();
-  for (const suffix of ["", "-wal", "-shm"]) {
-    const file = testDbPath + suffix;
-    if (fs.existsSync(file)) fs.unlinkSync(file);
-  }
 });
 
 function manager(): SessionManager {
@@ -38,7 +29,7 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<v
 }
 
 test("Autonomous relay controller completes after a ChatGPT round", async () => {
-  initDatabase(testDbPath);
+  initDatabase(":memory:");
   const sm = manager();
   const session = await sm.create({ provider: "fake", model: "fake-model" });
 
@@ -65,7 +56,7 @@ test("Autonomous relay controller completes after a ChatGPT round", async () => 
 });
 
 test("Autonomous relay stops at max rounds", async () => {
-  initDatabase(testDbPath);
+  initDatabase(":memory:");
   const sm = manager();
   const session = await sm.create({ provider: "fake", model: "fake-model" });
 
@@ -87,7 +78,7 @@ test("Autonomous relay stops at max rounds", async () => {
 });
 
 test("Autonomous relay is cancellable while external agent is running", async () => {
-  initDatabase(testDbPath);
+  initDatabase(":memory:");
   const sm = manager();
   const session = await sm.create({ provider: "fake", model: "fake-model" });
 
@@ -95,6 +86,10 @@ test("Autonomous relay is cancellable while external agent is running", async ()
     readonly id = "hanging";
     async next(_input: any, ctx: { signal?: AbortSignal }): Promise<AgentDecision> {
       await new Promise<void>((_resolve, reject) => {
+        if (ctx.signal?.aborted) {
+          reject(ctx.signal.reason ?? new DOMException("aborted", "AbortError"));
+          return;
+        }
         const onAbort = () => reject(ctx.signal?.reason ?? new DOMException("aborted", "AbortError"));
         ctx.signal?.addEventListener("abort", onAbort, { once: true });
       });
