@@ -17,65 +17,94 @@ const testDbPath = path.join(os.tmpdir(), `test-bridge-run-${Date.now()}.db`);
 
 afterEach(() => {
   closeDatabase();
-  if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
-  if (fs.existsSync(testDbPath + "-wal")) fs.unlinkSync(testDbPath + "-wal");
-  if (fs.existsSync(testDbPath + "-shm")) fs.unlinkSync(testDbPath + "-shm");
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const file = testDbPath + suffix;
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+  }
 });
 
-test("Autonomous relay controller", async () => {
-  initDatabase(testDbPath);
-  const sm = new SessionManager(new SessionStore(), new MessageStore(), new TurnStore(), {
-    "chatgpt-web": new FakeConversationProvider(),
+function manager(): SessionManager {
+  return new SessionManager(new SessionStore(), new MessageStore(), new TurnStore(), {
+    fake: new FakeConversationProvider(),
   });
+}
 
-  const session = await sm.create({ provider: "chatgpt-web", model: "auto" });
+async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for run state");
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
+
+test("Autonomous relay controller completes after a ChatGPT round", async () => {
+  initDatabase(testDbPath);
+  const sm = manager();
+  const session = await sm.create({ provider: "fake", model: "fake-model" });
 
   class MockAgent implements ExternalAgentAdapter {
-    id = "mock";
+    readonly id = "mock";
     async next(input: any): Promise<AgentDecision> {
-      if (input.round === 0) {
-        return { type: "message", content: "Round 0 message" };
-      }
-      return { type: "done", summary: "Finished!" };
+      return input.round === 0
+        ? { type: "message", content: "Round 0 message" }
+        : { type: "done", summary: "Finished!" };
     }
   }
 
   const runStore = new RunStore();
   const controller = new RunController(runStore, sm, new AuditStore(), () => new MockAgent());
-
   const run = await controller.startRun(session.id, "Test run", "mock", [], { maxRounds: 5 });
 
-  // wait for it to complete
-  await new Promise(r => setTimeout(r, 100));
+  await waitUntil(() => controller.getRun(run.id)?.status !== "running");
 
-  const completedRun = runStore.get(run.id);
-  expect(completedRun?.status).toBe("completed");
-  expect(completedRun?.round).toBe(1);
-  expect(completedRun?.finalSummary).toBe("Finished!");
+  const completed = controller.getRun(run.id);
+  expect(completed?.status).toBe("completed");
+  expect(completed?.round).toBe(1);
+  expect(completed?.finalSummary).toBe("Finished!");
+  expect((await sm.transcript(session.id)).map(message => message.role)).toEqual(["user", "assistant"]);
 });
 
-test("Autonomous relay max rounds", async () => {
+test("Autonomous relay stops at max rounds", async () => {
   initDatabase(testDbPath);
-  const sm = new SessionManager(new SessionStore(), new MessageStore(), new TurnStore(), {
-    "chatgpt-web": new FakeConversationProvider(),
-  });
-
-  const session = await sm.create({ provider: "chatgpt-web", model: "auto" });
+  const sm = manager();
+  const session = await sm.create({ provider: "fake", model: "fake-model" });
 
   class InfiniteAgent implements ExternalAgentAdapter {
-    id = "infinite";
+    readonly id = "infinite";
     async next(): Promise<AgentDecision> {
       return { type: "message", content: "Never done" };
     }
   }
 
   const controller = new RunController(new RunStore(), sm, new AuditStore(), () => new InfiniteAgent());
-
   const run = await controller.startRun(session.id, "Test limit", "infinite", [], { maxRounds: 2 });
-  
-  await new Promise(r => setTimeout(r, 100));
+
+  await waitUntil(() => controller.getRun(run.id)?.status !== "running");
 
   const exhausted = controller.getRun(run.id);
   expect(exhausted?.status).toBe("budget_exhausted");
   expect(exhausted?.round).toBe(2);
+});
+
+test("Autonomous relay is cancellable while external agent is running", async () => {
+  initDatabase(testDbPath);
+  const sm = manager();
+  const session = await sm.create({ provider: "fake", model: "fake-model" });
+
+  class HangingAgent implements ExternalAgentAdapter {
+    readonly id = "hanging";
+    async next(_input: any, ctx: { signal?: AbortSignal }): Promise<AgentDecision> {
+      await new Promise<void>((_resolve, reject) => {
+        const onAbort = () => reject(ctx.signal?.reason ?? new DOMException("aborted", "AbortError"));
+        ctx.signal?.addEventListener("abort", onAbort, { once: true });
+      });
+      return { type: "done", summary: "unreachable" };
+    }
+  }
+
+  const controller = new RunController(new RunStore(), sm, new AuditStore(), () => new HangingAgent());
+  const run = await controller.startRun(session.id, "Cancel me", "hanging");
+  expect(await controller.cancelRun(run.id)).toBe(true);
+  await waitUntil(() => controller.getRun(run.id)?.status !== "running");
+  expect(controller.getRun(run.id)?.status).toBe("cancelled");
 });
