@@ -14,6 +14,7 @@ Universal Agent -> ChatGPT Web bridge.
 
 Usage:
   agent-chatgpt serve
+  agent-chatgpt stop [--json]
   agent-chatgpt status [--json]
   agent-chatgpt models [--json]
   agent-chatgpt mcp
@@ -21,6 +22,7 @@ Usage:
   agent-chatgpt session list [--json]
   agent-chatgpt session show SESSION [--json]
   agent-chatgpt session transcript SESSION [--json]
+  agent-chatgpt session cancel SESSION [--json]
   agent-chatgpt session close SESSION [--json]
   agent-chatgpt ask [--session SESSION] [--stdin] [--prompt-prefix TEXT]
                     [--quiet-session] [--json] [MESSAGE]
@@ -121,7 +123,14 @@ function print(value: unknown, json: boolean): void {
 
 async function serveCommand(portOverride?: number): Promise<void> {
   const config = loadConfig();
-  const runtime = await createBridgeRuntime(config, { port: portOverride });
+  let requestStop!: () => void;
+  const stopRequested = new Promise<void>(resolve => {
+    requestStop = resolve;
+  });
+  const runtime = await createBridgeRuntime(config, {
+    port: portOverride,
+    requestShutdown: requestStop,
+  });
   const server = Bun.serve({
     hostname: runtime.host,
     port: runtime.port,
@@ -138,44 +147,24 @@ async function serveCommand(portOverride?: number): Promise<void> {
         : ""),
   );
 
-  let stopping = false;
-  let resolveStopped!: () => void;
-  let rejectStopped!: (error: Error) => void;
-  const stopped = new Promise<void>((resolve, reject) => {
-    resolveStopped = resolve;
-    rejectStopped = reject;
-  });
-
-  const stop = () => {
-    if (stopping) return;
-    stopping = true;
-    void (async () => {
-      const failures: unknown[] = [];
-      try {
-        await server.stop(true);
-      } catch (error) {
-        failures.push(error);
-      }
-      try {
-        await runtime.close();
-      } catch (error) {
-        failures.push(error);
-      }
-      if (failures.length > 0) {
-        rejectStopped(new AggregateError(failures, "agent-chatgpt shutdown failed"));
-      } else {
-        resolveStopped();
-      }
-    })();
-  };
-
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
+  const signalStop = () => requestStop();
+  process.once("SIGINT", signalStop);
+  process.once("SIGTERM", signalStop);
   try {
-    await stopped;
+    await stopRequested;
+    const results = await Promise.allSettled([
+      server.stop(false),
+      runtime.close(),
+    ]);
+    const failures = results
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map(result => result.reason);
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "agent-chatgpt shutdown failed");
+    }
   } finally {
-    process.off("SIGINT", stop);
-    process.off("SIGTERM", stop);
+    process.off("SIGINT", signalStop);
+    process.off("SIGTERM", signalStop);
   }
 }
 
@@ -211,6 +200,13 @@ async function sessionCommand(args: string[], client: ClientConfig, json: boolea
     print(await requestJson(client, `/sessions/${encodeURIComponent(session)}/messages`), json);
     return;
   }
+  if (action === "cancel") {
+    const session = args.shift();
+    if (!session) throw new Error("session cancel requires SESSION");
+    assertNoArgs(args);
+    print(await requestJson(client, `/sessions/${encodeURIComponent(session)}/cancel`, { method: "POST" }), json);
+    return;
+  }
   if (action === "close") {
     const session = args.shift();
     if (!session) throw new Error("session close requires SESSION");
@@ -218,7 +214,7 @@ async function sessionCommand(args: string[], client: ClientConfig, json: boolea
     print(await requestJson(client, `/sessions/${encodeURIComponent(session)}`, { method: "DELETE" }), json);
     return;
   }
-  throw new Error("session command must be one of: create, list, show, transcript, close");
+  throw new Error("session command must be one of: create, list, show, transcript, cancel, close");
 }
 
 async function askCommand(args: string[], client: ClientConfig, json: boolean): Promise<void> {
@@ -341,6 +337,11 @@ async function main(): Promise<void> {
   }
 
   const client = clientConfig(portOverride);
+  if (command === "stop") {
+    assertNoArgs(args);
+    print(await requestJson(client, "/shutdown", { method: "POST" }), json);
+    return;
+  }
   if (command === "status") {
     assertNoArgs(args);
     print(await requestJson(client, "/healthz"), json);
