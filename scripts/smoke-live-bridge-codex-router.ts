@@ -6,7 +6,7 @@ interface JsonRecord {
   [key: string]: unknown;
 }
 
-const routerBaseUrl = process.env.AGENT_CHATGPT_CODEX_ROUTER_BASE_URL?.trim();
+const routerBaseUrl = process.env.AGENT_CHATGPT_CODEX_ROUTER_BASE_URL?.trim() || "";
 if (!routerBaseUrl) {
   throw new Error("AGENT_CHATGPT_CODEX_ROUTER_BASE_URL is required for the live bridge smoke");
 }
