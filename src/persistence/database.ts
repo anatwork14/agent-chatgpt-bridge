@@ -12,12 +12,20 @@ export function getDatabasePath(): string {
 export function initDatabase(dbPath: string = getDatabasePath()): Database {
   if (db) return db;
 
-  const dir = path.dirname(dbPath);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  try { fs.chmodSync(dir, 0o700); } catch { /* Windows ACLs are owned by the installer/runtime user. */ }
+  // SQLite's canonical in-memory database name is not a filesystem path. Treating it like one
+  // is harmless on many Unix hosts but fails on Windows/Bun when mkdirSync(".", { recursive:true })
+  // reports EEXIST. Keep all owner-only directory/file permissions for real database files only.
+  const inMemory = dbPath === ":memory:";
+  if (!inMemory) {
+    const dir = path.dirname(dbPath);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try { fs.chmodSync(dir, 0o700); } catch { /* Windows ACLs are owned by the installer/runtime user. */ }
+  }
 
   db = new Database(dbPath);
-  try { fs.chmodSync(dbPath, 0o600); } catch { /* Windows ACLs are owned by the installer/runtime user. */ }
+  if (!inMemory) {
+    try { fs.chmodSync(dbPath, 0o600); } catch { /* Windows ACLs are owned by the installer/runtime user. */ }
+  }
 
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
