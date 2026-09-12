@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -73,6 +73,16 @@ const nodeBinary = process.env.CODEX_ROUTER_NODE?.trim() || Bun.which("node");
 invariant(nodeBinary, "Node.js is required to launch the real codex-router fixture");
 
 const stateDir = mkdtempSync(join(tmpdir(), "agent-chatgpt-real-router-state-"));
+// Mirror codex-router's own catalog/setup tests: routed models are exposed only when the
+// provider is explicitly enabled and has an available credential. The key is a CI-only fixture
+// consumed solely by the local mock gateway path; no external provider traffic is possible here.
+writeFileSync(
+  join(stateDir, "enabled-providers.json"),
+  `${JSON.stringify({ version: 1, providers: ["deepseek"] })}\n`,
+  { mode: 0o600 },
+);
+writeFileSync(join(stateDir, "deepseek-api-key.secret"), "bridge-ci-local-test-key\n", { mode: 0o600 });
+
 const upstreamBodies: any[] = [];
 const upstreamPaths: string[] = [];
 
