@@ -64,7 +64,7 @@ function shouldVerifyMacSignature() {
     && env.CSC_FOR_PULL_REQUEST !== "true");
 }
 
-function verifyMacArchive() {
+function verifySignedMacArchive() {
   const archives = fs.readdirSync(staging)
     .filter(name => /-mac-(?:arm64|x64)\.zip$/.test(name));
   if (archives.length !== 1) {
@@ -99,7 +99,7 @@ try {
   });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
-  if (target === "--mac") verifyMacArchive();
+  if (target === "--mac") verifySignedMacArchive();
 
   fs.mkdirSync(artifactsDirectory, { recursive: true });
   for (const entry of fs.readdirSync(artifactsDirectory, { withFileTypes: true })) {
