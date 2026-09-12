@@ -5,7 +5,7 @@ import { generateId } from "../../core/ids";
 import { SessionManager } from "../../core/session-manager";
 import type { RunController } from "../../core/run-controller";
 import { BridgeError } from "../../core/errors";
-import type { BridgeContentPart } from "../../core/domain";
+import type { BridgeContentPart, CollaborationRun } from "../../core/domain";
 import { IdempotencyStore } from "../../persistence/idempotency-store";
 import { executeIdempotent, validateIdempotencyKey } from "./idempotency";
 
@@ -16,6 +16,7 @@ export interface BridgeApiOptions {
   defaultModel?: string;
   listModels?: () => Promise<string[]>;
   runController?: RunController;
+  listRuns?: () => CollaborationRun[] | Promise<CollaborationRun[]>;
   idempotencyStore?: IdempotencyStore;
 }
 
@@ -288,6 +289,13 @@ export function createBridgeApi(sessionManager: SessionManager, options: BridgeA
     );
     if (replayed) c.header("idempotency-replayed", "true");
     return c.json(run, 201);
+  });
+
+  app.get("/runs", async (c) => {
+    if (!options.listRuns) {
+      throw new BridgeError("provider_unavailable", "Run listing is not configured", false);
+    }
+    return c.json(await options.listRuns());
   });
 
   app.get("/runs/:id", async (c) => {
