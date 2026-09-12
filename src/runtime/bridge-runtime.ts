@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Hono } from "hono";
+import { Hono } from "hono";
 import type { AppConfig } from "../config";
 import { providerConfig } from "../config";
 import { SubprocessJsonlAdapter } from "../agents/subprocess-jsonl";
@@ -16,6 +16,7 @@ import { BridgeError } from "../core/errors";
 import type { ConversationProvider } from "../providers/provider";
 import { ChatGPTWebConversationProvider } from "../providers/chatgpt-web/provider";
 import { createBridgeApi } from "../protocols/rest/routes";
+import { createResponsesApi } from "../protocols/responses/routes";
 import { AgentChatGptMcpServer } from "../protocols/mcp/server";
 
 export const DEFAULT_BRIDGE_PORT = 8765;
@@ -94,10 +95,11 @@ export async function createBridgeRuntime(
   const models = [...capabilities.models];
   const defaultModel = preferredBridgeModel(models);
 
+  const turnStore = new TurnStore();
   const sessionManager = new SessionManager(
     new SessionStore(),
     new MessageStore(),
-    new TurnStore(),
+    turnStore,
     { [provider.name]: provider },
   );
   const recoveredInterruptedTurns = sessionManager.recoverInterruptedTurns();
@@ -125,7 +127,7 @@ export async function createBridgeRuntime(
   const apiToken = dependencies.apiToken ?? bridgeApiToken(config);
   const port = resolveBridgePort(dependencies.port);
   const host = "127.0.0.1" as const;
-  const api = createBridgeApi(sessionManager, {
+  const bridgeApi = createBridgeApi(sessionManager, {
     apiToken,
     defaultProvider: provider.name,
     defaultModel,
@@ -134,6 +136,16 @@ export async function createBridgeRuntime(
     listRuns: () => runStore.list(),
     requestShutdown: dependencies.requestShutdown,
   });
+  const responsesApi = createResponsesApi(sessionManager, {
+    apiToken,
+    defaultProvider: provider.name,
+    defaultModel,
+    turnStore,
+  });
+  const api = new Hono();
+  api.route("/", bridgeApi);
+  api.route("/", responsesApi);
+
   const mcp = new AgentChatGptMcpServer(sessionManager, {
     defaultProvider: provider.name,
     defaultModel,
