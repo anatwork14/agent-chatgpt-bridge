@@ -8,8 +8,6 @@ export function createBridgeApi(sessionManager: SessionManager) {
 
   // Authentication middleware
   app.use("*", async (c, next) => {
-    // Basic auth check for local native API token
-    // For now we assume tests will mock it or we will pass it
     await next();
   });
 
@@ -62,7 +60,7 @@ export function createBridgeApi(sessionManager: SessionManager) {
         try {
           await sessionManager.send(id, {
             source: "rest",
-            model: { provider: "chatgpt-web", model: "auto" }, // Should resolve from session
+            model: { provider: "chatgpt-web", model: "auto" },
             messages: [{ id: "msg_" + Date.now(), role: "user", content: body.content, createdAt: new Date().toISOString() }],
             stream: true,
           }, {
@@ -98,7 +96,6 @@ export function createBridgeApi(sessionManager: SessionManager) {
   });
 
   app.post("/sessions/:id/cancel", async (c) => {
-    // Simplified: need turn id if there's one, or just cancel active
     await sessionManager.cancel(c.req.param("id"), "latest"); 
     return c.json({ success: true });
   });
@@ -108,8 +105,6 @@ export function createBridgeApi(sessionManager: SessionManager) {
         models: ["chatgpt-web/auto", "chatgpt-web/gpt-4o", "chatgpt-web/gpt-4"]
     });
   });
-
-}
 
   app.post("/runs", async (c) => {
     const body = await c.req.json();
@@ -123,8 +118,6 @@ export function createBridgeApi(sessionManager: SessionManager) {
       sessionId = session.id;
     }
     
-    // NOTE: This assumes RunController is accessible globally or passed in, 
-    // but we can just require it for now if needed.
     const { RunController } = require("../../core/run-controller");
     const { RunStore } = require("../../persistence/run-store");
     const { SubprocessJsonlAdapter } = require("../../agents/subprocess-jsonl");
@@ -156,4 +149,6 @@ export function createBridgeApi(sessionManager: SessionManager) {
     const run = store.get(c.req.param("id"));
     return c.json(run);
   });
-return app; }
+
+  return app;
+}
