@@ -1,6 +1,7 @@
 import type { CollaborationRun, ExternalAgentAdapter, AgentDecision, AgentTurnInput } from "./domain";
 import { generateRunId } from "./ids";
 import type { RunStore } from "../persistence/run-store";
+import type { AuditStore } from "../persistence/audit-store";
 import type { SessionManager } from "./session-manager";
 import { BridgeError } from "./errors";
 
@@ -10,6 +11,7 @@ export class RunController {
   constructor(
     private runStore: RunStore,
     private sessionManager: SessionManager,
+    private auditStore: AuditStore,
     private getAgentAdapter: (id: string, command?: string[]) => ExternalAgentAdapter
   ) {}
 
@@ -40,6 +42,7 @@ export class RunController {
     if (run.budget.maxRounds > 100) run.budget.maxRounds = 100;
 
     this.runStore.create(run);
+    this.auditStore.log({ eventType: "run.created", runId: run.id, payload: run, createdAt: run.createdAt });
 
     const abortController = new AbortController();
     this.activeRuns.set(run.id, abortController);
@@ -73,16 +76,19 @@ export class RunController {
       while (true) {
         if (signal.aborted) {
           this.runStore.update(run.id, { status: "cancelled", completedAt: new Date().toISOString() });
+          this.auditStore.log({ eventType: "run.cancelled", runId: run.id, createdAt: new Date().toISOString() });
           break;
         }
 
         if (run.round >= run.budget.maxRounds) {
           this.runStore.update(run.id, { status: "budget_exhausted", completedAt: new Date().toISOString() });
+          this.auditStore.log({ eventType: "run.budget_exhausted", runId: run.id, payload: { round: run.round }, createdAt: new Date().toISOString() });
           break;
         }
 
         if (Date.now() - startTime > run.budget.maxWallClockMs) {
           this.runStore.update(run.id, { status: "budget_exhausted", completedAt: new Date().toISOString() });
+          this.auditStore.log({ eventType: "run.budget_exhausted", runId: run.id, payload: { round: run.round }, createdAt: new Date().toISOString() });
           break;
         }
 
@@ -95,7 +101,25 @@ export class RunController {
 
         let decision: AgentDecision;
         try {
-          decision = await adapter.next(input, { signal });
+          
+          // Calculate remaining wall clock
+          const elapsed = Date.now() - startTime;
+          const remaining = Math.max(0, run.budget.maxWallClockMs - elapsed);
+          
+          const timeoutController = new AbortController();
+          const timeoutId = setTimeout(() => timeoutController.abort(), remaining);
+          
+          // Link parent signal
+          const onParentAbort = () => timeoutController.abort();
+          signal.addEventListener("abort", onParentAbort);
+          
+          try {
+            decision = await adapter.next(input, { signal: timeoutController.signal });
+          } finally {
+            clearTimeout(timeoutId);
+            signal.removeEventListener("abort", onParentAbort);
+          }
+
         } catch (e: any) {
           decision = { type: "error", message: e.message, retryable: false };
         }

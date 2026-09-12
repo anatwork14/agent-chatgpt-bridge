@@ -573,7 +573,7 @@ class RuntimeSupervisor {
 
   async proxyHealth(config, timeoutMs = 2_000, expectedPid, requireAccepting = false) {
     const body = await this.proxyHealthPayload(config, timeoutMs);
-    return body?.service === "codex-chatgpt-web"
+    return body?.service === "agent-chatgpt-bridge"
       && body?.status === "ok"
       && body?.mode === config.mode
       && body?.version === config.releaseVersion
@@ -1711,7 +1711,7 @@ class RuntimeSupervisor {
       throw new Error("DEV launcher ownership unexpectedly contains a Responses daemon");
     }
     const health = tunnelOnly ? null : await this.proxyHealthPayload(config);
-    const daemonRunning = health?.service === "codex-chatgpt-web"
+    const daemonRunning = health?.service === "agent-chatgpt-bridge"
       && health?.mode === config.mode
       && health?.version === config.releaseVersion;
     if (daemonRunning && health.pid !== state.daemonPid) {

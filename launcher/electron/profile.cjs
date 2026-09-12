@@ -25,7 +25,7 @@ function resolveLauncherProfile({
   if (!development) {
     const coreHome = env.CODEX_CHATGPT_WEB_HOME?.trim()
       ? resolveUserPath(env.CODEX_CHATGPT_WEB_HOME.trim(), homeDir)
-      : path.join(homeDir, ".codex-chatgpt-web");
+      : path.join(homeDir, ".agent-chatgpt-bridge");
     const userData = env.CODEX_WEB_GPT_LAUNCHER_DATA_DIR?.trim()
       ? resolveUserPath(env.CODEX_WEB_GPT_LAUNCHER_DATA_DIR.trim(), homeDir)
       : path.join(appData, "Codex Web GPT");
@@ -43,12 +43,12 @@ function resolveLauncherProfile({
 
   const coreHome = env.CODEX_WEB_GPT_DEV_HOME?.trim()
     ? resolveUserPath(env.CODEX_WEB_GPT_DEV_HOME.trim(), homeDir)
-    : path.join(homeDir, ".codex-chatgpt-web-dev");
+    : path.join(homeDir, ".agent-chatgpt-bridge-dev");
   const productionHome = env.CODEX_CHATGPT_WEB_HOME?.trim()
     ? resolveUserPath(env.CODEX_CHATGPT_WEB_HOME.trim(), homeDir)
-    : path.join(homeDir, ".codex-chatgpt-web");
+    : path.join(homeDir, ".agent-chatgpt-bridge");
   if (path.resolve(coreHome) === path.resolve(productionHome)) {
-    throw new Error("DEV profile home must differ from the production codex-chatgpt-web home");
+    throw new Error("DEV profile home must differ from the production agent-chatgpt-bridge home");
   }
   return {
     kind: DEVELOPMENT_PROFILE,

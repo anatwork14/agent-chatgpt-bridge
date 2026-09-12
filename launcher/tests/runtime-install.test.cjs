@@ -60,7 +60,7 @@ function writeRuntimeManifest(source, version = "0.2.0") {
     bunVersion: "1.4.0",
     platform: process.platform,
     arch: process.arch,
-    launcher: `bin/${process.platform === "win32" ? "codex-chatgpt-web.cmd" : "codex-chatgpt-web"}`,
+    launcher: `bin/${process.platform === "win32" ? "agent-chatgpt-bridge.cmd" : "agent-chatgpt-bridge"}`,
     entrypoint: "app/cli.js",
     playwright: "1.62.0",
     files,
@@ -89,7 +89,7 @@ function runtimeFixture(root, version = "0.2.0") {
   );
   fs.mkdirSync(path.join(source, "bin"), { recursive: true });
   fs.writeFileSync(
-    path.join(source, "bin", process.platform === "win32" ? "codex-chatgpt-web.cmd" : "codex-chatgpt-web"),
+    path.join(source, "bin", process.platform === "win32" ? "agent-chatgpt-bridge.cmd" : "agent-chatgpt-bridge"),
     "launcher",
   );
   writeRuntimeManifest(source, version);

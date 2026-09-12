@@ -57,7 +57,7 @@ function launcherConfig(descriptorPath, overrides = {}) {
     chromeExecutablePath: process.execPath,
     storageStatePath: path.join(root, "storage-state.json"),
     brokerSocketPath: process.platform === "win32"
-      ? "\\\\.\\pipe\\codex-chatgpt-web-runtime-supervisor-test"
+      ? "\\\\.\\pipe\\agent-chatgpt-bridge-runtime-supervisor-test"
       : path.join(root, "turn-broker.sock"),
     headed: true,
     proAvailable: true,
@@ -172,8 +172,8 @@ test("DEV runtime supervision ignores launcher version mismatch and starts only 
       tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
       runtimeKeyFile: path.join(root, "secrets", "runtime.key"),
       profileDir: path.join(root, "tunnel", "profiles"),
-      profileName: "codex-chatgpt-web-dev",
-      alias: "codex-chatgpt-web-dev",
+      profileName: "agent-chatgpt-bridge-dev",
+      alias: "agent-chatgpt-bridge-dev",
     },
   });
   fs.writeFileSync(path.join(root, "config.json"), `${JSON.stringify(config)}\n`);
@@ -227,8 +227,8 @@ test("launcher runtime validation rejects a relative full-mode executable before
       tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
       runtimeKeyFile: path.join(os.tmpdir(), "runtime.key"),
       profileDir: path.join(os.tmpdir(), "profiles"),
-      profileName: "codex-chatgpt-web",
-      alias: "codex-chatgpt-web",
+      profileName: "agent-chatgpt-bridge",
+      alias: "agent-chatgpt-bridge",
     },
   }), descriptorPath), /absolute tunnel\.binaryPath/);
 });
@@ -247,32 +247,32 @@ test("launcher runtime validation accepts native Windows paths and a named pipe"
     browserHostDescriptorPath: descriptorPath.toLowerCase(),
     chromeExecutablePath: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
     storageStatePath: "C:\\Users\\Example\\AppData\\Local\\Codex Web GPT\\storage-state.json",
-    brokerSocketPath: "\\\\.\\pipe\\codex-chatgpt-web-runtime-supervisor-test",
+    brokerSocketPath: "\\\\.\\pipe\\agent-chatgpt-bridge-runtime-supervisor-test",
     headed: true,
     solAvailable: true,
     proAvailable: true,
     autoApproveToolCalls: false,
     controlToken: "runtime-supervisor-control-token-0123456789abcdef",
-    runtimeCommand: ["C:\\Users\\Example\\.codex-chatgpt-web\\runtime\\bun.exe"],
+    runtimeCommand: ["C:\\Users\\Example\\.agent-chatgpt-bridge\\runtime\\bun.exe"],
   };
   assert.equal(validateConfig(config, descriptorPath, "win32"), config);
 });
 
 test("launcher delegates long-lived tunnel supervision to native runtimes connect", () => {
-  const config = launcherConfig("C:\\Users\\Example\\.codex-chatgpt-web\\runtime\\launcher-browser.json", {
+  const config = launcherConfig("C:\\Users\\Example\\.agent-chatgpt-bridge\\runtime\\launcher-browser.json", {
     mode: "full",
     runtimeCommand: [
-      "C:\\Users\\Example\\.codex-chatgpt-web\\versions\\0.2.0-win32-x64\\runtime\\bun.exe",
-      "C:\\Users\\Example\\.codex-chatgpt-web\\versions\\0.2.0-win32-x64\\app\\cli.js",
+      "C:\\Users\\Example\\.agent-chatgpt-bridge\\versions\\0.2.0-win32-x64\\runtime\\bun.exe",
+      "C:\\Users\\Example\\.agent-chatgpt-bridge\\versions\\0.2.0-win32-x64\\app\\cli.js",
     ],
-    brokerSocketPath: "\\\\.\\pipe\\codex-chatgpt-web-example",
+    brokerSocketPath: "\\\\.\\pipe\\agent-chatgpt-bridge-example",
     tunnel: {
-      binaryPath: "C:\\Users\\Example\\.codex-chatgpt-web\\bin\\tunnel-client.exe",
+      binaryPath: "C:\\Users\\Example\\.agent-chatgpt-bridge\\bin\\tunnel-client.exe",
       tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
-      runtimeKeyFile: "C:\\Users\\Example\\.codex-chatgpt-web\\secrets\\tunnel-runtime.key",
-      profileDir: "C:\\Users\\Example\\.codex-chatgpt-web\\tunnel\\profiles",
-      profileName: "codex-chatgpt-web",
-      alias: "codex-chatgpt-web",
+      runtimeKeyFile: "C:\\Users\\Example\\.agent-chatgpt-bridge\\secrets\\tunnel-runtime.key",
+      profileDir: "C:\\Users\\Example\\.agent-chatgpt-bridge\\tunnel\\profiles",
+      profileName: "agent-chatgpt-bridge",
+      alias: "agent-chatgpt-bridge",
     },
   });
   const invocation = {
@@ -287,12 +287,12 @@ test("launcher delegates long-lived tunnel supervision to native runtimes connec
   };
   const args = managedTunnelConnectArgs(config, invocation);
   assert.deepEqual(args.slice(0, 4), [
-    "runtimes", "connect", "--alias", "codex-chatgpt-web",
+    "runtimes", "connect", "--alias", "agent-chatgpt-bridge",
   ]);
   assert.equal(args.includes("run"), false);
   assert.equal(args.at(-1), "--json");
   assert.equal(args[args.indexOf("--mcp-command") + 1].includes("bun.exe"), true);
-  assert.equal(args[args.indexOf("--mcp-command") + 1].includes("\\\\\\\\.\\\\pipe\\\\codex-chatgpt-web-example"), true);
+  assert.equal(args[args.indexOf("--mcp-command") + 1].includes("\\\\\\\\.\\\\pipe\\\\agent-chatgpt-bridge-example"), true);
   assert.equal(args[args.indexOf("--mcp-command") + 1].includes("versions"), false);
   assert.throws(
     () => managedTunnelConnectArgs(config),
@@ -310,8 +310,8 @@ test("launcher repairs its runtime before building the tunnel MCP command", asyn
       tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
       runtimeKeyFile: path.join(root, "secrets", "tunnel-runtime.key"),
       profileDir: path.join(root, "tunnel", "profiles"),
-      profileName: "codex-chatgpt-web",
-      alias: "codex-chatgpt-web",
+      profileName: "agent-chatgpt-bridge",
+      alias: "agent-chatgpt-bridge",
     },
   });
   const repairedRuntime = path.join(root, "launcher-runtime");
@@ -676,7 +676,7 @@ test("tunnel readiness accepts the official tmux status without inventing a PID"
     code: 0,
     output: JSON.stringify({
       entries: [{
-        alias: "codex-chatgpt-web",
+        alias: "agent-chatgpt-bridge",
         runtime_state: "ready",
         classification: "active_runtime",
         live_runtime: { found: true, base_url: "http://127.0.0.1:12345" },
@@ -685,11 +685,11 @@ test("tunnel readiness accepts the official tmux status without inventing a PID"
   });
   try {
     const health = await supervisor.readTunnelHealth({
-      tunnel: { alias: "codex-chatgpt-web" },
+      tunnel: { alias: "agent-chatgpt-bridge" },
     });
     assert.equal(health.ready, true);
     assert.equal(health.pid, null);
-    await supervisor.waitForTunnel({ tunnel: { alias: "codex-chatgpt-web" } }, 1);
+    await supervisor.waitForTunnel({ tunnel: { alias: "agent-chatgpt-bridge" } }, 1);
     assert.equal(supervisor.tunnel?.managed, true);
     assert.equal(supervisor.tunnel?.pid, null);
   } finally {
@@ -712,7 +712,7 @@ test("a clean machine reports the official unknown-alias status as an absent run
   });
   try {
     const health = await supervisor.readTunnelHealth({
-      tunnel: { alias: "codex-chatgpt-web" },
+      tunnel: { alias: "agent-chatgpt-bridge" },
     });
     assert.equal(health.ready, false);
     assert.equal(health.absent, true);
@@ -761,7 +761,7 @@ test("launcher adopts a healthy native managed tunnel without spawning a foregro
   fs.mkdirSync(profileDir, { recursive: true });
   fs.writeFileSync(binaryPath, "binary");
   fs.writeFileSync(runtimeKeyFile, "runtime-key");
-  fs.writeFileSync(path.join(profileDir, "codex-chatgpt-web.yaml"), "profile");
+  fs.writeFileSync(path.join(profileDir, "agent-chatgpt-bridge.yaml"), "profile");
   const supervisor = new RuntimeSupervisor({
     app: { getVersion: () => "0.2.0", isPackaged: false },
     logger: { info() {}, warn() {}, error() {} },
@@ -792,7 +792,7 @@ test("launcher adopts a healthy native managed tunnel without spawning a foregro
         binaryPath,
         runtimeKeyFile,
         profileDir,
-        profileName: "codex-chatgpt-web",
+        profileName: "agent-chatgpt-bridge",
       },
     });
     assert.equal(connects, 0);
@@ -852,14 +852,14 @@ test("tunnel recovery replaces a false-green managed runtime and proves the fres
   fs.mkdirSync(profileDir, { recursive: true });
   fs.writeFileSync(binaryPath, "binary");
   fs.writeFileSync(runtimeKeyFile, "runtime-key");
-  fs.writeFileSync(path.join(profileDir, "codex-chatgpt-web.yaml"), "profile");
+  fs.writeFileSync(path.join(profileDir, "agent-chatgpt-bridge.yaml"), "profile");
   const config = {
     mode: "full",
     tunnel: {
       binaryPath,
       runtimeKeyFile,
       profileDir,
-      profileName: "codex-chatgpt-web",
+      profileName: "agent-chatgpt-bridge",
     },
   };
   const supervisor = new RuntimeSupervisor({
@@ -924,7 +924,7 @@ test("fresh tunnel recovery discovers its official loopback diagnostics before p
   });
   const config = {
     tunnel: {
-      alias: "codex-chatgpt-web",
+      alias: "agent-chatgpt-bridge",
       binaryPath: path.join(root, "tunnel-client"),
       profileDir: root,
     },
@@ -948,7 +948,7 @@ test("fresh tunnel recovery discovers its official loopback diagnostics before p
   try {
     await supervisor.waitForTunnelMcpTransport(config, 25);
     assert.equal(supervisor.tunnelHealthBaseUrl, "http://127.0.0.1:43127");
-    assert.deepEqual(commands, [["runtimes", "status", "codex-chatgpt-web", "--json"]]);
+    assert.deepEqual(commands, [["runtimes", "status", "agent-chatgpt-bridge", "--json"]]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -970,7 +970,7 @@ test("tunnel diagnostics discovery rejects a non-loopback endpoint", async () =>
   try {
     await assert.rejects(
       supervisor.discoverTunnelHealthBaseUrl({
-        tunnel: { alias: "codex-chatgpt-web", binaryPath: path.join(root, "tunnel-client"), profileDir: root },
+        tunnel: { alias: "agent-chatgpt-bridge", binaryPath: path.join(root, "tunnel-client"), profileDir: root },
       }),
       /no verified loopback endpoint/,
     );
@@ -987,7 +987,7 @@ test("launcher stops an unhealthy managed runtime before reconnecting the alias"
   fs.mkdirSync(profileDir, { recursive: true });
   fs.writeFileSync(binaryPath, "binary");
   fs.writeFileSync(runtimeKeyFile, "runtime-key");
-  fs.writeFileSync(path.join(profileDir, "codex-chatgpt-web.yaml"), "profile");
+  fs.writeFileSync(path.join(profileDir, "agent-chatgpt-bridge.yaml"), "profile");
   const supervisor = new RuntimeSupervisor({
     app: { getVersion: () => "0.2.0", isPackaged: false },
     logger: { info() {}, warn() {}, error() {} },
@@ -1023,7 +1023,7 @@ test("launcher stops an unhealthy managed runtime before reconnecting the alias"
         binaryPath,
         runtimeKeyFile,
         profileDir,
-        profileName: "codex-chatgpt-web",
+        profileName: "agent-chatgpt-bridge",
       },
     });
     assert.deepEqual(events, [
@@ -1065,8 +1065,8 @@ test("failed tunnel startup accepts an absent alias only after its recorded proc
   supervisor.runTunnelStopCommand = async () => ({
     code: 1,
     stdout: "",
-    stderr: "alias codex-chatgpt-web is not known",
-    output: "alias codex-chatgpt-web is not known",
+    stderr: "alias agent-chatgpt-bridge is not known",
+    output: "alias agent-chatgpt-bridge is not known",
   });
   supervisor.runTunnelConnectCommand = async () => {
     supervisor.tunnel = {
@@ -1087,8 +1087,8 @@ test("failed tunnel startup accepts an absent alias only after its recorded proc
           binaryPath,
           runtimeKeyFile,
           profileDir: root,
-          profileName: "codex-chatgpt-web",
-          alias: "codex-chatgpt-web",
+          profileName: "agent-chatgpt-bridge",
+          alias: "agent-chatgpt-bridge",
           tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
         },
       }),
@@ -1211,7 +1211,7 @@ test("launcher shutdown reacquires a managed tunnel that was between monitor and
     coreHome: root,
     browserDescriptorPath: path.join(root, "launcher.json"),
   });
-  const config = { mode: "full", tunnel: { alias: "codex-chatgpt-web" } };
+  const config = { mode: "full", tunnel: { alias: "agent-chatgpt-bridge" } };
   let stops = 0;
   let confirmations = 0;
   supervisor.readConfig = () => config;
@@ -1554,8 +1554,8 @@ test("launcher recovers a stale tunnel even when no stale Responses proxy is rea
       tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
       runtimeKeyFile: path.join(root, "runtime.key"),
       profileDir: path.join(root, "profiles"),
-      profileName: "codex-chatgpt-web",
-      alias: "codex-chatgpt-web",
+      profileName: "agent-chatgpt-bridge",
+      alias: "agent-chatgpt-bridge",
     },
   }))}\n`);
   fs.writeFileSync(path.join(root, "runtime", "launcher-supervisor.json"), `${JSON.stringify({
@@ -1640,7 +1640,7 @@ test("stale ownership recovery stops a managed tmux runtime even though it has n
   try {
     assert.equal(await supervisor.stopStaleOwnedRuntime({
       mode: "full",
-      tunnel: { alias: "codex-chatgpt-web" },
+      tunnel: { alias: "agent-chatgpt-bridge" },
     }), true);
     assert.equal(stops, 1);
     assert.equal(fs.existsSync(supervisor.statePath), false);
@@ -1711,8 +1711,8 @@ test("a failed full-runtime marker with no child evidence cannot block removal o
       tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
       runtimeKeyFile: path.join(root, "runtime.key"),
       profileDir: path.join(root, "profiles"),
-      profileName: "codex-chatgpt-web",
-      alias: "codex-chatgpt-web",
+      profileName: "agent-chatgpt-bridge",
+      alias: "agent-chatgpt-bridge",
     },
   }))}\n`);
   fs.writeFileSync(statePath, `${JSON.stringify({
@@ -1799,7 +1799,7 @@ const server = http.createServer((request, response) => {
   if (request.url === "/healthz") {
     response.end(JSON.stringify({
       status: "ok",
-      service: "codex-chatgpt-web",
+      service: "agent-chatgpt-bridge",
       mode: config.mode,
       version: config.releaseVersion,
       pid: process.pid,
@@ -1886,7 +1886,7 @@ const server = http.createServer((request, response) => {
   if (request.url === "/healthz") {
     response.end(JSON.stringify({
       status: "ok",
-      service: "codex-chatgpt-web",
+      service: "agent-chatgpt-bridge",
       mode: config.mode,
       version: config.releaseVersion,
       pid: process.pid,

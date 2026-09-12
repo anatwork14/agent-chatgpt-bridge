@@ -1,6 +1,7 @@
 import { expect, test, afterEach } from "bun:test";
 import { RunController } from "./run-controller";
 import { RunStore } from "../persistence/run-store";
+import { AuditStore } from "../persistence/audit-store";
 import { SessionManager } from "./session-manager";
 import { FakeConversationProvider } from "../providers/fake/provider";
 import { initDatabase, closeDatabase } from "../persistence/database";
@@ -40,7 +41,7 @@ test("Autonomous relay controller", async () => {
   }
 
   const runStore = new RunStore();
-  const controller = new RunController(runStore, sm, () => new MockAgent());
+  const controller = new RunController(runStore, sm, new AuditStore(), () => new MockAgent());
 
   const run = await controller.startRun(session.id, "Test run", "mock", [], { maxRounds: 5 });
 
@@ -68,7 +69,7 @@ test("Autonomous relay max rounds", async () => {
     }
   }
 
-  const controller = new RunController(new RunStore(), sm, () => new InfiniteAgent());
+  const controller = new RunController(new RunStore(), sm, new AuditStore(), () => new InfiniteAgent());
 
   const run = await controller.startRun(session.id, "Test limit", "infinite", [], { maxRounds: 2 });
   

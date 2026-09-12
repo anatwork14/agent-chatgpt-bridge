@@ -120,11 +120,14 @@ export function createBridgeApi(sessionManager: SessionManager) {
     
     const { RunController } = require("../../core/run-controller");
     const { RunStore } = require("../../persistence/run-store");
+    const { AuditStore } = require("../../persistence/audit-store");
+    
     const { SubprocessJsonlAdapter } = require("../../agents/subprocess-jsonl");
 
     const runController = new RunController(
       new RunStore(), 
       sessionManager, 
+      new AuditStore(),
       (id, cmd) => new SubprocessJsonlAdapter(cmd || [])
     );
 
@@ -145,6 +148,8 @@ export function createBridgeApi(sessionManager: SessionManager) {
 
   app.get("/runs/:id", async (c) => {
     const { RunStore } = require("../../persistence/run-store");
+    const { AuditStore } = require("../../persistence/audit-store");
+    
     const store = new RunStore();
     const run = store.get(c.req.param("id"));
     return c.json(run);
