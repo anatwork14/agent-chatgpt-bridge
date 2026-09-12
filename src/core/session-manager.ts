@@ -297,6 +297,9 @@ export class SessionManager {
 
       if (result.status === "completed") {
         for (const message of currentMessages) {
+          // Protocol adapters may inject turn-scoped instructions or control context that the
+          // provider needs for this turn but must not become canonical session history.
+          if (message.metadata?.transient === true) continue;
           this.messageStore.create({
             id: message.id,
             sessionId,
