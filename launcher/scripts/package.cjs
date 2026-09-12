@@ -55,7 +55,16 @@ function runChecked(command, args) {
   }
 }
 
-function verifySignedMacArchive() {
+function shouldVerifyMacSignature() {
+  // electron-builder intentionally skips macOS signing for pull-request builds unless
+  // CSC_FOR_PULL_REQUEST is explicitly enabled. Keep archive/runtime verification in PR CI,
+  // but never require or expose signing credentials there. Release/non-PR builds stay strict.
+  return !(env.GITHUB_ACTIONS === "true"
+    && env.GITHUB_EVENT_NAME === "pull_request"
+    && env.CSC_FOR_PULL_REQUEST !== "true");
+}
+
+function verifyMacArchive() {
   const archives = fs.readdirSync(staging)
     .filter(name => /-mac-(?:arm64|x64)\.zip$/.test(name));
   if (archives.length !== 1) {
@@ -65,7 +74,9 @@ function verifySignedMacArchive() {
   try {
     runChecked("ditto", ["-x", "-k", path.join(staging, archives[0]), verificationRoot]);
     const appBundle = path.join(verificationRoot, `${launcherManifest.build.productName}.app`);
-    runChecked("codesign", ["--verify", "--deep", "--strict", appBundle]);
+    if (shouldVerifyMacSignature()) {
+      runChecked("codesign", ["--verify", "--deep", "--strict", appBundle]);
+    }
     validateRuntimeBundle(path.join(appBundle, "Contents", "Resources", "runtime"), {
       version: launcherManifest.version,
       platform: "darwin",
@@ -88,7 +99,7 @@ try {
   });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
-  if (target === "--mac") verifySignedMacArchive();
+  if (target === "--mac") verifyMacArchive();
 
   fs.mkdirSync(artifactsDirectory, { recursive: true });
   for (const entry of fs.readdirSync(artifactsDirectory, { withFileTypes: true })) {
