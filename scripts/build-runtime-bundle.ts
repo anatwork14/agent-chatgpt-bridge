@@ -137,6 +137,34 @@ exec "$root/runtime/bun" "$root/app/cli.js" "$@"
 writeFileSync(join(binDir, launcherName), launcher, process.platform === "win32" ? undefined : { mode: 0o755 });
 if (process.platform !== "win32") chmodSync(join(binDir, launcherName), 0o755);
 
+const bridgeLauncherName = process.platform === "win32" ? "agent-chatgpt.cmd" : "agent-chatgpt";
+const bridgeLauncher = process.platform === "win32" ? `@echo off
+setlocal
+chcp 65001 >nul
+set "ROOT=%~dp0.."
+"%ROOT%\\runtime\\bun.exe" "%ROOT%\\app\\agent-chatgpt.js" %*
+` : `#!/bin/sh
+set -eu
+invoked="$0"
+case "$invoked" in
+  /*) ;;
+  *) invoked="$(command -v -- "$invoked")" ;;
+esac
+script="$invoked"
+while [ -L "$script" ]; do
+  target="$(readlink "$script")"
+  case "$target" in
+    /*) script="$target" ;;
+    *) script="$(dirname "$script")/$target" ;;
+  esac
+done
+bin_dir="$(CDPATH= cd -- "$(dirname "$script")" && pwd -P)"
+root="$(CDPATH= cd -- "$bin_dir/.." && pwd -P)"
+exec "$root/runtime/bun" "$root/app/agent-chatgpt.js" "$@"
+`;
+writeFileSync(join(binDir, bridgeLauncherName), bridgeLauncher, process.platform === "win32" ? undefined : { mode: 0o755 });
+if (process.platform !== "win32") chmodSync(join(binDir, bridgeLauncherName), 0o755);
+
 const notices = Bun.spawnSync([
   process.execPath,
   "run",
