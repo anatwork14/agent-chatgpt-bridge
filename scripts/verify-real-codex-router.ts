@@ -72,6 +72,8 @@ const routerRepo = process.env.CODEX_ROUTER_REPO_DIR?.trim();
 invariant(routerRepo, "CODEX_ROUTER_REPO_DIR must point at a pinned codex-router checkout");
 const routerEntry = resolve(routerRepo, "src", "router.mjs");
 invariant(existsSync(routerEntry), `Pinned codex-router entrypoint is missing: ${routerEntry}`);
+const fixtureCatalog = resolve(routerRepo, "config", "deepseek", "deepseek-v4.1-flash.json");
+invariant(existsSync(fixtureCatalog), `Pinned codex-router fixture catalog is missing: ${fixtureCatalog}`);
 
 const nodeBinary = process.env.CODEX_ROUTER_NODE?.trim() || Bun.which("node");
 invariant(nodeBinary, "Node.js is required to launch the real codex-router fixture");
@@ -170,6 +172,10 @@ const child = Bun.spawn([nodeBinary, routerEntry], {
     CODEX_ROUTER_SHOW_ALL_MODELS: "1",
     CODEX_ROUTER_QUIET: "1",
     CODEX_ROUTER_PORT: String(routerPort),
+    // Production installs point this at merged-models.json. The integration fixture instead uses
+    // the pinned router's own checked-in model descriptor so catalog discovery is deterministic
+    // without requiring a native Codex installation/capture step on GitHub Actions.
+    CODEX_ROUTER_CATALOG: fixtureCatalog,
     CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
     CODEX_ROUTER_OAUTH_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
     CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
