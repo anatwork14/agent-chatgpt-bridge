@@ -60,6 +60,8 @@ Read [`docs/security-model.md`](docs/security-model.md) before enabling tool-cap
 
 ## Development setup
 
+The source runtime requires Bun 1.4.0.
+
 Requirements:
 
 - Bun 1.4.0
