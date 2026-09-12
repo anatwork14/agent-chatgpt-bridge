@@ -39,6 +39,7 @@
     "smoke": "bun run scripts/smoke-release.ts dist/runtime",
     "smoke:codex": "bun run scripts/smoke-codex-catalog.ts",
     "smoke:codex-router": "bun run scripts/smoke-codex-router.ts",
+    "smoke:codex-router:bridge": "bun run scripts/smoke-live-bridge-codex-router.ts",
     "smoke:cancel": "bun run scripts/smoke-codex-cancel.ts",
     "smoke:interrupt": "bun run scripts/smoke-codex-interrupt.ts",
     "smoke:subagents": "bun run scripts/smoke-codex-subagents.ts --v1 && bun run scripts/smoke-codex-subagents.ts --v2",
