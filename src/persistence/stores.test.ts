@@ -3,22 +3,13 @@ import { initDatabase, closeDatabase } from "./database";
 import { SessionStore } from "./session-store";
 import { TurnStore } from "./turn-store";
 import { MessageStore } from "./message-store";
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
-
-const testDbPath = path.join(os.tmpdir(), `test-bridge-stores-${Date.now()}.db`);
 
 afterEach(() => {
   closeDatabase();
-  for (const suffix of ["", "-wal", "-shm"]) {
-    const file = testDbPath + suffix;
-    if (fs.existsSync(file)) fs.unlinkSync(file);
-  }
 });
 
 test("SessionStore CRUD operations", () => {
-  initDatabase(testDbPath);
+  initDatabase(":memory:");
   const store = new SessionStore();
 
   store.create({
@@ -43,7 +34,7 @@ test("SessionStore CRUD operations", () => {
 });
 
 test("TurnStore and MessageStore operations", () => {
-  initDatabase(testDbPath);
+  initDatabase(":memory:");
   const sessionStore = new SessionStore();
   const msgStore = new MessageStore();
   const turnStore = new TurnStore();
