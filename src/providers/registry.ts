@@ -2,11 +2,71 @@ import type { BridgeTurnRequest, BridgeTurnResult } from "../core/domain";
 import type { BridgeEvent } from "../core/events";
 import { BridgeError } from "../core/errors";
 import type { ConversationProvider, ProviderCapabilities } from "./provider";
+import { ProviderHealthTracker, type ProviderHealthObservation } from "./health";
 
 export const MODEL_ROUTER_PROVIDER_NAME = "model-router";
 
+function observedProvider(
+  delegate: ConversationProvider,
+  health: ProviderHealthTracker,
+): ConversationProvider {
+  const provider: ConversationProvider = {
+    name: delegate.name,
+
+    async capabilities(): Promise<ProviderCapabilities> {
+      try {
+        const capabilities = await delegate.capabilities();
+        health.recordSuccess(delegate.name, "discovery");
+        return capabilities;
+      } catch (error) {
+        health.recordError(delegate.name, error, "discovery");
+        throw error;
+      }
+    },
+
+    async runTurn(
+      request: BridgeTurnRequest,
+      ctx: { signal?: AbortSignal; emit(event: BridgeEvent): void },
+    ): Promise<BridgeTurnResult> {
+      try {
+        const result = await delegate.runTurn(request, ctx);
+        health.recordTurn(delegate.name, result);
+        return result;
+      } catch (error) {
+        health.recordError(delegate.name, error, "turn");
+        throw error;
+      }
+    },
+  };
+
+  if (delegate.validateModel) {
+    provider.validateModel = async (model: string): Promise<void> => {
+      try {
+        await delegate.validateModel!(model);
+        health.recordSuccess(delegate.name, "validation");
+      } catch (error) {
+        health.recordError(delegate.name, error, "validation");
+        throw error;
+      }
+    };
+  }
+
+  if (delegate.cancelTurn) {
+    provider.cancelTurn = (sessionId: string, turnId: string): Promise<void> => (
+      delegate.cancelTurn!(sessionId, turnId)
+    );
+  }
+
+  if (delegate.closeSession) {
+    provider.closeSession = (sessionId: string): Promise<void> => delegate.closeSession!(sessionId);
+  }
+
+  return provider;
+}
+
 export class ProviderRegistry {
   private readonly providers = new Map<string, ConversationProvider>();
+  private readonly health = new ProviderHealthTracker();
 
   constructor(initial: readonly ConversationProvider[] = []) {
     for (const provider of initial) this.register(provider);
@@ -23,7 +83,7 @@ export class ProviderRegistry {
     if (this.providers.has(provider.name)) {
       throw new BridgeError("session_conflict", `Provider ${provider.name} is already registered`, false);
     }
-    this.providers.set(provider.name, provider);
+    this.providers.set(provider.name, observedProvider(provider, this.health));
   }
 
   get(name: string): ConversationProvider | undefined {
@@ -38,6 +98,24 @@ export class ProviderRegistry {
     const entries = this.values().map(provider => [provider.name, provider] as const);
     for (const provider of extra) entries.push([provider.name, provider] as const);
     return Object.fromEntries(entries);
+  }
+
+  providerHealth(): ProviderHealthObservation[] {
+    return this.health.list(this.values().map(provider => provider.name));
+  }
+
+  markProviderCooldown(
+    providerName: string,
+    cooldownUntil: Date,
+    code = "provider_rate_limited",
+  ): ProviderHealthObservation {
+    if (!this.providers.has(providerName)) {
+      throw new BridgeError("invalid_request", `Provider ${providerName} is not registered`, false);
+    }
+    if (!Number.isFinite(cooldownUntil.getTime())) {
+      throw new BridgeError("invalid_request", "Provider cooldown deadline must be a valid date", false);
+    }
+    return this.health.markCooldown(providerName, cooldownUntil, code);
   }
 
   private namespacedOwner(model: string): ConversationProvider | undefined {
@@ -71,6 +149,10 @@ export class ProviderRegistry {
   async validateModel(model: string): Promise<void> {
     const owner = this.namespacedOwner(model);
     if (owner) {
+      if (owner.validateModel) {
+        await owner.validateModel(model);
+        return;
+      }
       const capabilities = await owner.capabilities();
       if (!capabilities.models.includes(model)) {
         throw new BridgeError(
