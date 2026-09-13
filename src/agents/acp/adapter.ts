@@ -290,7 +290,9 @@ export class AcpAgentAdapter implements ExternalAgentAdapter {
             throw new AcpProcessError("ACP connection closed");
           }),
           new Promise<never>((_, reject) => {
-            internal.signal.addEventListener("abort", () => reject(internal.signal.reason), { once: true });
+            const rejectAborted = () => reject(internal.signal.reason);
+            if (internal.signal.aborted) rejectAborted();
+            else internal.signal.addEventListener("abort", rejectAborted, { once: true });
           }),
         ]);
         if (update.kind === "stop") {
