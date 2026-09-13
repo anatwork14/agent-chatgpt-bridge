@@ -25,6 +25,7 @@ import {
   ProviderRegistry,
 } from "../providers/registry";
 import { createBridgeApi } from "../protocols/rest/routes";
+import { createProviderHealthApi } from "../protocols/rest/provider-health";
 import { createResponsesApi } from "../protocols/responses/routes";
 import { AgentChatGptMcpServer } from "../protocols/mcp/server";
 
@@ -204,6 +205,10 @@ export async function createBridgeRuntime(
     listRuns: () => runStore.list(),
     requestShutdown: dependencies.requestShutdown,
   });
+  const providerHealthApi = createProviderHealthApi({
+    apiToken,
+    listProviderHealth: () => registry.providerHealth(),
+  });
   const responsesApi = createResponsesApi(sessionManager, {
     apiToken,
     defaultProvider,
@@ -213,6 +218,7 @@ export async function createBridgeRuntime(
   });
   const api = new Hono();
   api.route("/", bridgeApi);
+  api.route("/", providerHealthApi);
   api.route("/", responsesApi);
 
   const mcp = new AgentChatGptMcpServer(sessionManager, {
