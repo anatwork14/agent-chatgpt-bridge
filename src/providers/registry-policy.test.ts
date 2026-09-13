@@ -140,6 +140,31 @@ test("explicit fallback skips a candidate already observed as degraded", async (
   });
 });
 
+test("explicit fallback rejects a namespaced model the provider does not actually expose", async () => {
+  const primary = new RoutedProvider(
+    "codex-router",
+    ["codex-router/deepseek/v4"],
+    "primary",
+  );
+  const fallback = new RoutedProvider("chatgpt-web", ["chatgpt-web/high"], "fallback");
+  const registry = new ProviderRegistry([primary, fallback]);
+  await registry.listModels();
+  registry.markProviderCooldown("codex-router", futureCooldown());
+
+  const router = new ModelRouterConversationProvider(registry, {
+    fallback: {
+      mode: "ordered",
+      models: ["chatgpt-web/not-a-real-model"],
+      on: ["cooldown"],
+    },
+  });
+
+  await expect(router.runTurn(request("codex-router/deepseek/v4"), ctx))
+    .rejects.toMatchObject({ code: "model_unavailable", retryable: false });
+  expect(primary.turns).toBe(0);
+  expect(fallback.turns).toBe(0);
+});
+
 test("model-router fails closed before provider execution when route audit cannot persist", async () => {
   const primary = new RoutedProvider(
     "codex-router",
