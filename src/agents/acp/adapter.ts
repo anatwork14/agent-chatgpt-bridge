@@ -160,20 +160,23 @@ export class AcpAgentAdapter implements ExternalAgentAdapter {
       this.audit("agent.acp.started", { profile: this.profile.id });
 
       const boundedOutput = new BoundedOutput(maxProtocolBytes);
+      let protocolOutputSeen = false;
+      this.child.stdout.once("data", () => {
+        protocolOutputSeen = true;
+      });
       this.child.stdout.pipe(boundedOutput);
       const child = this.child;
       child.once("error", () => {
         this.auditFailure(new AcpProcessError("ACP process failed"));
         this.connection?.close(new AcpProcessError("ACP process failed"));
       });
-      child.once("close", (code, signal) => {
+      child.once("close", () => {
         if (this.closing) return;
-        this.auditFailure(new AcpProcessError("ACP process exited unexpectedly"));
-        if (code !== 0 || signal) {
-          this.connection?.close(new AcpProcessError("ACP process exited unexpectedly"));
-        } else {
-          this.connection?.close(new AcpProcessError("ACP process closed before the run ended"));
-        }
+        const processError = this.protocolVersion === undefined && protocolOutputSeen
+          ? acpError("agent_protocol_invalid", "The ACP agent protocol stream ended during initialization")
+          : new AcpProcessError("ACP process exited unexpectedly");
+        this.auditFailure(processError);
+        this.connection?.close(processError);
       });
       boundedOutput.once("error", error => {
         this.connection?.close(error);

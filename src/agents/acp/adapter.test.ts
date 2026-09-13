@@ -99,7 +99,7 @@ function rawAgentSource(): string {
   return String.raw`
     process.stdin.resume();
     process.stdin.once("data", () => {
-      process.stdout.write("not-json\\n");
+      process.stdout.end("not-json\n");
       setTimeout(() => process.exit(0), 10);
     });
   `;
