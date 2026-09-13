@@ -100,7 +100,7 @@ test("tracker records only bridge-safe observation metadata and can heal", () =>
   expect(tracker.get("codex-router")?.observedAt).toBe("2026-09-13T00:00:01.000Z");
 });
 
-test("cooldown is entered only through an explicit policy observation", () => {
+test("manual cooldown remains active until its deadline", () => {
   const tracker = new ProviderHealthTracker(() => new Date("2026-09-13T00:00:00.000Z"));
   tracker.markCooldown("codex-router", new Date("2026-09-13T00:00:30.000Z"));
   expect(tracker.get("codex-router")).toEqual({
@@ -112,4 +112,48 @@ test("cooldown is entered only through an explicit policy observation", () => {
     retryable: true,
     cooldownUntil: "2026-09-13T00:00:30.000Z",
   });
+});
+
+test("configured rate limit enters cooldown, cannot heal early, and expires to unknown", () => {
+  let now = new Date("2026-09-13T00:00:00.000Z");
+  const tracker = new ProviderHealthTracker(() => now, { rateLimitCooldownMs: 30_000 });
+
+  tracker.recordError(
+    "codex-router",
+    new BridgeError("provider_rate_limited", "429", true),
+    "turn",
+  );
+  expect(tracker.get("codex-router")).toEqual({
+    provider: "codex-router",
+    state: "cooldown",
+    operation: "policy",
+    observedAt: "2026-09-13T00:00:00.000Z",
+    code: "provider_rate_limited",
+    retryable: true,
+    cooldownUntil: "2026-09-13T00:00:30.000Z",
+  });
+
+  now = new Date("2026-09-13T00:00:10.000Z");
+  tracker.recordSuccess("codex-router", "discovery");
+  expect(tracker.get("codex-router")?.state).toBe("cooldown");
+
+  now = new Date("2026-09-13T00:00:30.000Z");
+  expect(tracker.get("codex-router")).toBeUndefined();
+
+  tracker.recordSuccess("codex-router", "turn");
+  expect(tracker.get("codex-router")).toEqual({
+    provider: "codex-router",
+    state: "healthy",
+    operation: "turn",
+    observedAt: "2026-09-13T00:00:30.000Z",
+  });
+});
+
+test("rate-limit cooldown duration must be explicitly positive and finite", () => {
+  for (const rateLimitCooldownMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    expect(() => new ProviderHealthTracker(
+      () => new Date("2026-09-13T00:00:00.000Z"),
+      { rateLimitCooldownMs },
+    )).toThrow("rateLimitCooldownMs must be a positive finite number");
+  }
 });
