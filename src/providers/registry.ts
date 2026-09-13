@@ -3,6 +3,11 @@ import type { BridgeEvent } from "../core/events";
 import { BridgeError } from "../core/errors";
 import type { ConversationProvider, ProviderCapabilities } from "./provider";
 import { ProviderHealthTracker, type ProviderHealthObservation } from "./health";
+import {
+  DEFAULT_PROVIDER_ROUTING_POLICY,
+  selectProviderRoute,
+  type ProviderRoutingPolicy,
+} from "./policy";
 
 export const MODEL_ROUTER_PROVIDER_NAME = "model-router";
 
@@ -212,7 +217,10 @@ export class ProviderRegistry {
 export class ModelRouterConversationProvider implements ConversationProvider {
   public readonly name = MODEL_ROUTER_PROVIDER_NAME;
 
-  constructor(private readonly registry: ProviderRegistry) {}
+  constructor(
+    private readonly registry: ProviderRegistry,
+    private readonly policy: ProviderRoutingPolicy = DEFAULT_PROVIDER_ROUTING_POLICY,
+  ) {}
 
   async capabilities(): Promise<ProviderCapabilities> {
     return {
@@ -232,19 +240,43 @@ export class ModelRouterConversationProvider implements ConversationProvider {
     request: BridgeTurnRequest,
     ctx: { signal?: AbortSignal; emit(event: BridgeEvent): void },
   ): Promise<BridgeTurnResult> {
-    const provider = await this.registry.resolveModel(request.model.model);
+    const requestedProvider = await this.registry.resolveModel(request.model.model);
+    const decision = await selectProviderRoute(
+      request.model.model,
+      requestedProvider,
+      this.registry.providerHealth(),
+      model => this.registry.resolveModel(model),
+      this.policy,
+    );
+    const provider = decision.fallback
+      ? this.registry.get(decision.selectedProvider)
+      : requestedProvider;
+    if (!provider) {
+      throw new BridgeError(
+        "provider_unavailable",
+        `Selected provider ${decision.selectedProvider} is no longer registered`,
+        true,
+      );
+    }
+
     const result = await provider.runTurn({
       ...request,
       model: {
         ...request.model,
         provider: provider.name,
+        model: decision.selectedModel,
       },
     }, ctx);
     return {
       ...result,
       providerMetadata: {
-        routedProvider: provider.name,
         ...(result.providerMetadata ?? {}),
+        routedProvider: provider.name,
+        routedModel: decision.selectedModel,
+        requestedProvider: decision.requestedProvider,
+        requestedModel: decision.requestedModel,
+        fallback: decision.fallback,
+        ...(decision.reasonState ? { fallbackReasonState: decision.reasonState } : {}),
       },
     };
   }
