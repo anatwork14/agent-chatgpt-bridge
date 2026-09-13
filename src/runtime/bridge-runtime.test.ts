@@ -22,6 +22,51 @@ class OfflineOptionalProvider implements ConversationProvider {
   }
 }
 
+class HealthyNamespacedProvider implements ConversationProvider {
+  public readonly name = "chatgpt-web";
+  public turns = 0;
+
+  async capabilities(): Promise<ProviderCapabilities> {
+    return { supportsImages: false, supportsTools: false, models: ["chatgpt-web/high"] };
+  }
+
+  async runTurn(request: BridgeTurnRequest): Promise<BridgeTurnResult> {
+    this.turns += 1;
+    return {
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      turnId: request.requestId,
+      status: "completed",
+      text: "fallback reply",
+    };
+  }
+}
+
+class RateLimitedNamespacedProvider implements ConversationProvider {
+  public readonly name = "codex-router";
+  public turns = 0;
+
+  async capabilities(): Promise<ProviderCapabilities> {
+    return { supportsImages: false, supportsTools: false, models: ["codex-router/limited"] };
+  }
+
+  async runTurn(request: BridgeTurnRequest): Promise<BridgeTurnResult> {
+    this.turns += 1;
+    return {
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      turnId: request.requestId,
+      status: "failed",
+      text: "",
+      error: {
+        code: "provider_rate_limited",
+        message: "downstream limit",
+        retryable: true,
+      },
+    };
+  }
+}
+
 test("codex-router provider refuses recursive routes to the bridge listener", () => {
   for (const baseUrl of [
     "http://127.0.0.1:8765/v1",
@@ -144,6 +189,116 @@ test("runtime persists every model-router decision before provider execution", a
       selectedProvider: "fake",
       fallback: false,
     });
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("runtime applies explicit cooldown fallback without migrating the persistent session model", async () => {
+  closeDatabase();
+  initDatabase(":memory:");
+  const primary = new HealthyNamespacedProvider();
+  const limited = new RateLimitedNamespacedProvider();
+  const runtime = await createBridgeRuntime(defaultConfig(), {
+    provider: primary,
+    additionalProviders: [limited],
+    codexRouter: false,
+    providerHealthPolicy: { rateLimitCooldownMs: 60_000 },
+    routingPolicy: {
+      fallback: {
+        mode: "ordered",
+        models: ["chatgpt-web/high"],
+        on: ["cooldown"],
+      },
+    },
+    apiToken: "runtime-policy-secret",
+    port: 8768,
+  });
+
+  try {
+    const session = await runtime.sessionManager.create({
+      provider: runtime.defaultProvider,
+      model: "codex-router/limited",
+    });
+
+    const first = await runtime.sessionManager.send(session.id, {
+      requestId: "turn_runtime_rate_limit",
+      source: "internal",
+      model: { provider: runtime.defaultProvider, model: "codex-router/limited" },
+      messages: [{
+        id: "msg_runtime_rate_limit",
+        role: "user",
+        content: [{ type: "text", text: "first" }],
+        createdAt: new Date(0).toISOString(),
+      }],
+      stream: false,
+    }, { emit: () => undefined });
+    expect(first.status).toBe("failed");
+    expect(first.error?.code).toBe("provider_rate_limited");
+    expect(limited.turns).toBe(1);
+    expect(primary.turns).toBe(0);
+
+    const second = await runtime.sessionManager.send(session.id, {
+      requestId: "turn_runtime_fallback",
+      source: "internal",
+      model: { provider: runtime.defaultProvider, model: "codex-router/limited" },
+      messages: [{
+        id: "msg_runtime_fallback",
+        role: "user",
+        content: [{ type: "text", text: "second" }],
+        createdAt: new Date(1).toISOString(),
+      }],
+      stream: false,
+    }, { emit: () => undefined });
+    expect(second.status).toBe("completed");
+    expect(second.text).toBe("fallback reply");
+    expect(second.providerMetadata).toMatchObject({
+      requestedProvider: "codex-router",
+      requestedModel: "codex-router/limited",
+      routedProvider: "chatgpt-web",
+      routedModel: "chatgpt-web/high",
+      fallback: true,
+      fallbackReasonState: "cooldown",
+    });
+    expect(limited.turns).toBe(1);
+    expect(primary.turns).toBe(1);
+
+    const persistedSession = await runtime.sessionManager.get(session.id);
+    expect(persistedSession.provider).toBe("model-router");
+    expect(persistedSession.model).toBe("codex-router/limited");
+
+    const healthResponse = await runtime.api.request("/bridge/v1/providers/health", {
+      headers: { Authorization: "Bearer runtime-policy-secret" },
+    });
+    const health = await healthResponse.json() as { providers: Array<Record<string, unknown>> };
+    expect(health.providers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ provider: "codex-router", state: "cooldown" }),
+      expect.objectContaining({ provider: "chatgpt-web", state: "healthy" }),
+    ]));
+
+    const routeRows = getDatabase().query(`
+      SELECT payload_json AS payloadJson
+      FROM audit_events
+      WHERE event_type = 'provider.route' AND session_id = ?
+      ORDER BY id ASC
+    `).all(session.id) as Array<{ payloadJson: string }>;
+    expect(routeRows.map(row => JSON.parse(row.payloadJson))).toEqual([
+      {
+        requestedModel: "codex-router/limited",
+        requestedProvider: "codex-router",
+        selectedModel: "codex-router/limited",
+        selectedProvider: "codex-router",
+        fallback: false,
+      },
+      {
+        requestedModel: "codex-router/limited",
+        requestedProvider: "codex-router",
+        selectedModel: "chatgpt-web/high",
+        selectedProvider: "chatgpt-web",
+        fallback: true,
+        reasonState: "cooldown",
+      },
+    ]);
   } finally {
     await runtime.close();
   }
