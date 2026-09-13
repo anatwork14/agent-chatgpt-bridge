@@ -1,6 +1,6 @@
-import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { BridgeError } from "../core/errors";
+import { spawnOwnedAgentProcess, terminateProcessTree } from "./process";
 import type {
   ExternalAgentAdapter,
   AgentTurnInput,
@@ -17,39 +17,6 @@ export interface SubprocessJsonlOptions {
 
 const DEFAULT_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_MAX_STDOUT_BYTES = 1024 * 1024;
-
-function safeEnvironment(extra?: Record<string, string>): NodeJS.ProcessEnv {
-  const keys = [
-    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TERM", "TMPDIR", "TMP", "TEMP",
-    "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "APPDATA", "LOCALAPPDATA", "USERPROFILE",
-  ];
-  const env: NodeJS.ProcessEnv = {};
-  for (const key of keys) {
-    const value = process.env[key];
-    if (value !== undefined) env[key] = value;
-  }
-  for (const [key, value] of Object.entries(process.env)) {
-    if (key.startsWith("LC_") && value !== undefined) env[key] = value;
-  }
-  return { ...env, ...extra };
-}
-
-function terminateTree(child: ChildProcess): void {
-  if (!child.pid || child.exitCode !== null) return;
-  if (process.platform === "win32") {
-    const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    killer.unref();
-    return;
-  }
-  try {
-    process.kill(-child.pid, "SIGTERM");
-  } catch {
-    try { child.kill("SIGTERM"); } catch { /* already gone */ }
-  }
-}
 
 function bridgeParts(value: unknown): BridgeContentPart[] | undefined {
   if (value === undefined) return undefined;
@@ -126,16 +93,13 @@ export class SubprocessJsonlAdapter implements ExternalAgentAdapter {
     const [command, ...args] = this.command;
 
     return new Promise<AgentDecision>((resolve, reject) => {
-      const child = spawn(command!, args, {
+      const child = spawnOwnedAgentProcess([command!, ...args], {
         cwd: this.options.cwd ?? process.cwd(),
-        env: safeEnvironment(this.options.env),
-        stdio: ["pipe", "pipe", "inherit"],
-        detached: process.platform !== "win32",
-        windowsHide: true,
+        env: this.options.env,
       });
       if (!child.stdout || !child.stdin) {
         reject(new BridgeError("agent_adapter_failed", "Failed to create subprocess stdio pipes", false));
-        terminateTree(child);
+        terminateProcessTree(child);
         return;
       }
 
@@ -146,7 +110,7 @@ export class SubprocessJsonlAdapter implements ExternalAgentAdapter {
         if (settled) return;
         settled = true;
         cleanup();
-        terminateTree(child);
+        terminateProcessTree(child);
         reject(error);
       };
       const timeout = setTimeout(() => fail(new BridgeError(

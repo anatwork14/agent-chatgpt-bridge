@@ -182,6 +182,11 @@ export interface AgentTurnInput {
   };
 }
 
+export interface ExternalAgentAdapterConfig {
+  profile?: string;
+  permissionMode?: string;
+}
+
 export interface ExternalAgentAdapter {
   readonly id: string;
   initialize?(context: { runId: string; objective: string; cwd?: string }): Promise<void>;

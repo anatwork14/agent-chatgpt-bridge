@@ -5,7 +5,7 @@ import { generateId } from "../../core/ids";
 import { SessionManager } from "../../core/session-manager";
 import type { RunController } from "../../core/run-controller";
 import { BridgeError } from "../../core/errors";
-import type { BridgeContentPart, CollaborationRun } from "../../core/domain";
+import type { BridgeContentPart, CollaborationRun, ExternalAgentAdapterConfig } from "../../core/domain";
 import { IdempotencyStore } from "../../persistence/idempotency-store";
 import { executeIdempotent, validateIdempotencyKey } from "./idempotency";
 
@@ -256,6 +256,38 @@ export function createBridgeApi(sessionManager: SessionManager, options: BridgeA
         const command = Array.isArray(adapter.command) && adapter.command.every(value => typeof value === "string")
           ? adapter.command as string[]
           : undefined;
+        if (adapter.command !== undefined && !command) {
+          throw new BridgeError("invalid_request", "agent_adapter.command must be an array of strings", false);
+        }
+        const permissionMode = adapter.permission_mode;
+        if (permissionMode !== undefined
+          && permissionMode !== "deny"
+          && permissionMode !== "allow_readonly"
+          && permissionMode !== "delegate") {
+          throw new BridgeError(
+            "invalid_request",
+            "agent_adapter.permission_mode must be deny, allow_readonly, or delegate",
+            false,
+          );
+        }
+        if (permissionMode === "delegate") {
+          throw new BridgeError(
+            "invalid_request",
+            "agent_adapter.permission_mode=delegate is only available to embedded callers with a resolver",
+            false,
+          );
+        }
+        if (permissionMode !== undefined && !adapter.type.startsWith("acp")) {
+          throw new BridgeError(
+            "invalid_request",
+            "agent_adapter.permission_mode is only supported by ACP agents",
+            false,
+          );
+        }
+        const agentAdapterConfig: ExternalAgentAdapterConfig = {
+          profile: typeof adapter.profile === "string" ? adapter.profile : undefined,
+          permissionMode: typeof permissionMode === "string" ? permissionMode : undefined,
+        };
 
         const chatgpt = body.chatgpt && typeof body.chatgpt === "object" && !Array.isArray(body.chatgpt)
           ? body.chatgpt as Record<string, unknown>
@@ -293,6 +325,7 @@ export function createBridgeApi(sessionManager: SessionManager, options: BridgeA
               ? budget.max_consecutive_failures
               : undefined,
           },
+          agentAdapterConfig,
         );
       },
     );

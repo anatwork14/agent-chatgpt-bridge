@@ -1,6 +1,24 @@
 # External Agent Adapters
 
-The bridge core talks to external agents through `ExternalAgentAdapter`. The first universal adapter is `subprocess-jsonl`.
+The bridge core talks to external agents through `ExternalAgentAdapter`. The available transports are the per-turn `subprocess-jsonl` adapter and the persistent stable ACP v1 adapter.
+
+## ACP v1
+
+ACP support uses the official `@agentclientprotocol/sdk` stable root entry point. The bridge is the ACP client; the configured coding agent is the ACP agent. One ACP process and session are retained for the lifetime of a collaboration run, so relay rounds preserve agent-side conversational context.
+
+Built-in launch profiles are configuration data:
+
+| Adapter type | Launch command |
+| --- | --- |
+| `acp:cursor` | `agent acp` |
+| `acp:gemini` | `gemini --acp` |
+| `acp:claude` | `claude-agent-acp` |
+
+Use `acp` with a non-empty `command` array for a custom ACP agent. The bridge advertises no filesystem, terminal, or MCP capability by default and rejects unsupported client callbacks. ACP permission handling defaults to `deny`; `allow_readonly` only selects an explicitly offered allow option for read/search/fetch tool kinds. Embedded callers may use `delegate` with a permission resolver.
+
+ACP agents inherit only the allowlisted process environment plus explicitly configured extra variables. The bridge never reads, parses, persists, or returns agent-client OAuth/API credentials. Protocol output is bounded, stderr is kept separate from stdout, and cancellation/close terminate the owned process tree after a bounded grace period.
+
+The ACP adapter asks an agent to use the bridge-owned completion convention `<bridge_done>SUMMARY...</bridge_done>`. A completed ACP prompt without that marker is still only a collaboration message; prompt completion is not treated as objective completion.
 
 ## JSONL protocol
 
