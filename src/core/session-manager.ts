@@ -147,13 +147,17 @@ export class SessionManager {
       throw new BridgeError("provider_unavailable", `Provider ${params.provider} is not configured`, false);
     }
 
-    const capabilities = await provider.capabilities();
-    if (capabilities.models.length > 0 && !capabilities.models.includes(params.model)) {
-      throw new BridgeError(
-        "model_unavailable",
-        `Model ${params.model} is not available from provider ${params.provider}`,
-        false,
-      );
+    if (provider.validateModel) {
+      await provider.validateModel(params.model);
+    } else {
+      const capabilities = await provider.capabilities();
+      if (capabilities.models.length > 0 && !capabilities.models.includes(params.model)) {
+        throw new BridgeError(
+          "model_unavailable",
+          `Model ${params.model} is not available from provider ${params.provider}`,
+          false,
+        );
+      }
     }
 
     if (params.name && this.sessionStore.getByName(params.name)) {

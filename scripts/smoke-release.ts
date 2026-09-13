@@ -73,7 +73,11 @@ const bridgeHelp = Bun.spawnSync([runtimeExecutable, bridgeEntrypoint, "--help"]
   stdout: "pipe",
   stderr: "pipe",
 });
-if (bridgeHelp.exitCode !== 0 || !bridgeHelp.stdout.toString().includes("Universal Agent -> ChatGPT Web bridge.")) {
+const bridgeHelpText = bridgeHelp.stdout.toString();
+if (bridgeHelp.exitCode !== 0
+  || !bridgeHelpText.includes("agent-chatgpt")
+  || !bridgeHelpText.includes("agent-chatgpt session create")
+  || !bridgeHelpText.includes("codex-router/...")) {
   throw new Error(`Packaged agent-chatgpt CLI failed its help smoke: ${bridgeHelp.stderr.toString()}`);
 }
 

@@ -1,4 +1,6 @@
 import { expect, test, afterEach } from "bun:test";
+import { PassThrough } from "node:stream";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { AgentChatGptMcpServer } from "./server";
 import { SessionManager } from "../../core/session-manager";
 import { FakeConversationProvider } from "../../providers/fake/provider";
@@ -48,4 +50,25 @@ test("MCP server tool handling", async () => {
   const cancelRes = await server.handleToolCall("chatgpt_cancel", { session_id: session.id });
   expect(isErrorResult(cancelRes)).toBe(false);
   expect(JSON.parse(cancelRes.content[0].text)).toEqual({ cancelled: false });
+});
+
+test("MCP run owns the stdio lifetime until the transport closes", async () => {
+  initDatabase(":memory:");
+  const sm = new SessionManager(new SessionStore(), new MessageStore(), new TurnStore(), {
+    "chatgpt-web": new FakeConversationProvider(),
+  });
+  const server = new AgentChatGptMcpServer(sm, {
+    defaultProvider: "chatgpt-web",
+    defaultModel: "fake-model",
+  });
+  const transport = new StdioServerTransport(new PassThrough(), new PassThrough());
+  let settled = false;
+  const running = server.run(transport).finally(() => { settled = true; });
+
+  await Bun.sleep(25);
+  expect(settled).toBe(false);
+
+  await transport.close();
+  await running;
+  expect(settled).toBe(true);
 });

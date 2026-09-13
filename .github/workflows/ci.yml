@@ -69,6 +69,38 @@ jobs:
         run: command -v xvfb-run || (sudo apt-get update && sudo apt-get install -y xvfb)
       - run: bun run app:smoke
 
+  codex-router-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Agent ChatGPT Bridge
+        uses: actions/checkout@v6
+      - name: Checkout pinned codex-router fixture
+        uses: actions/checkout@v6
+        with:
+          repository: duolahypercho/codex-router
+          ref: a71312d75284872d62b27f3e0ce8e21df6fa125c
+          path: .codex-router-fixture
+          persist-credentials: false
+      - name: Set up Node for codex-router
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.19.0"
+          cache: npm
+          cache-dependency-path: .codex-router-fixture/package-lock.json
+      - name: Install pinned codex-router runtime dependencies
+        working-directory: .codex-router-fixture
+        run: npm ci --omit=dev --ignore-scripts
+      - name: Set up Bun for bridge verifier
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Install bridge dependencies
+        run: bun install --frozen-lockfile
+      - name: Run real codex-router process integration
+        env:
+          CODEX_ROUTER_REPO_DIR: ${{ github.workspace }}/.codex-router-fixture
+        run: bun run scripts/verify-real-codex-router.ts
+
   actionlint:
     runs-on: ubuntu-latest
     steps:

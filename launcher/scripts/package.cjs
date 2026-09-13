@@ -55,6 +55,15 @@ function runChecked(command, args) {
   }
 }
 
+function shouldVerifyMacSignature() {
+  // electron-builder intentionally skips macOS signing for pull-request builds unless
+  // CSC_FOR_PULL_REQUEST is explicitly enabled. Keep archive/runtime verification in PR CI,
+  // but never require or expose signing credentials there. Release/non-PR builds stay strict.
+  return !(env.GITHUB_ACTIONS === "true"
+    && env.GITHUB_EVENT_NAME === "pull_request"
+    && env.CSC_FOR_PULL_REQUEST !== "true");
+}
+
 function verifySignedMacArchive() {
   const archives = fs.readdirSync(staging)
     .filter(name => /-mac-(?:arm64|x64)\.zip$/.test(name));
@@ -65,7 +74,9 @@ function verifySignedMacArchive() {
   try {
     runChecked("ditto", ["-x", "-k", path.join(staging, archives[0]), verificationRoot]);
     const appBundle = path.join(verificationRoot, `${launcherManifest.build.productName}.app`);
-    runChecked("codesign", ["--verify", "--deep", "--strict", appBundle]);
+    if (shouldVerifyMacSignature()) {
+      runChecked("codesign", ["--verify", "--deep", "--strict", appBundle]);
+    }
     validateRuntimeBundle(path.join(appBundle, "Contents", "Resources", "runtime"), {
       version: launcherManifest.version,
       platform: "darwin",

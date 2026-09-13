@@ -12,6 +12,12 @@ export interface ConversationProvider {
 
   capabilities(): Promise<ProviderCapabilities>;
 
+  /**
+   * Optional targeted model validation hook. Meta-providers should implement this so validating
+   * one provider's model cannot require every optional downstream provider to be healthy.
+   */
+  validateModel?(model: string): Promise<void>;
+
   runTurn(
     request: BridgeTurnRequest,
     ctx: {

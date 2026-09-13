@@ -14,7 +14,7 @@ import { composePrompt } from "./prompt";
 
 const HELP = `agent-chatgpt
 
-Universal Agent -> ChatGPT Web bridge.
+Local AI agent collaboration runtime for ChatGPT Web and routed model providers.
 
 Usage:
   agent-chatgpt app
@@ -32,13 +32,18 @@ Usage:
   agent-chatgpt session transcript SESSION [--json]
   agent-chatgpt session cancel SESSION [--json]
   agent-chatgpt session close SESSION [--json]
-  agent-chatgpt ask [--session SESSION] [--stdin] [--prompt-prefix TEXT]
-                    [--quiet-session] [--json] [MESSAGE]
-  agent-chatgpt run --objective TEXT --agent-command PATH [--session SESSION]
+  agent-chatgpt ask [--session SESSION] [--model MODEL] [--effort EFFORT]
+                    [--stdin] [--prompt-prefix TEXT] [--quiet-session] [--json] [MESSAGE]
+  agent-chatgpt run --objective TEXT --agent-command PATH
+                    [--session SESSION | --model MODEL] [--effort EFFORT]
                     [--max-rounds N] [--max-wall-clock-ms N] [--json]
   agent-chatgpt run list [--json]
   agent-chatgpt run show RUN_ID [--json]
   agent-chatgpt run cancel RUN_ID [--json]
+
+Model namespaces:
+  chatgpt-web/...              Direct ChatGPT Web provider routes
+  codex-router/...             External models routed through codex-router (when configured)
 
 Global:
   --home PATH                 Override ~/.codex-chatgpt-web
@@ -264,9 +269,14 @@ async function sessionCommand(args: string[], client: ClientConfig, json: boolea
 
 async function askCommand(args: string[], client: ClientConfig, json: boolean): Promise<void> {
   let sessionId = takeOption(args, "--session");
+  const model = takeOption(args, "--model");
+  const effort = takeOption(args, "--effort");
   const promptPrefix = takeOption(args, "--prompt-prefix");
   const fromStdin = takeFlag(args, "--stdin");
   const quietSession = takeFlag(args, "--quiet-session");
+  if (sessionId && (model || effort)) {
+    throw new Error("ask --model/--effort can only be used when creating a new session; existing sessions own their model");
+  }
   const message = fromStdin ? await readStdin() : args.join(" ").trim();
   if (fromStdin) assertNoArgs(args);
   const prompt = composePrompt(message, promptPrefix);
@@ -275,7 +285,7 @@ async function askCommand(args: string[], client: ClientConfig, json: boolean): 
   if (!sessionId) {
     const session = await requestJson(client, "/sessions", {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify({ model, effort }),
     });
     sessionId = session.id;
   }
@@ -324,11 +334,16 @@ async function runCommand(args: string[], client: ClientConfig, json: boolean): 
   const objective = takeOption(args, "--objective");
   const agentCommand = takeOption(args, "--agent-command");
   const sessionId = takeOption(args, "--session");
+  const model = takeOption(args, "--model");
+  const effort = takeOption(args, "--effort");
   const maxRounds = numericOption(args, "--max-rounds");
   const maxWallClockMs = numericOption(args, "--max-wall-clock-ms");
   const maxConsecutiveFailures = numericOption(args, "--max-consecutive-failures");
   if (!objective) throw new Error("run requires --objective TEXT");
   if (!agentCommand) throw new Error("run requires --agent-command PATH");
+  if (sessionId && (model || effort)) {
+    throw new Error("run --model/--effort cannot override an existing --session model");
+  }
   assertNoArgs(args);
 
   print(await requestJson(client, "/runs", {
@@ -339,7 +354,7 @@ async function runCommand(args: string[], client: ClientConfig, json: boolean): 
         type: "subprocess-jsonl",
         command: [agentCommand],
       },
-      chatgpt: sessionId ? { session_id: sessionId } : {},
+      chatgpt: sessionId ? { session_id: sessionId } : { model, effort },
       budget: {
         max_rounds: maxRounds,
         max_wall_clock_ms: maxWallClockMs,
