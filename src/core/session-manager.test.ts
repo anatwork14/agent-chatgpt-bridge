@@ -116,3 +116,74 @@ test("SessionManager cancel and close", async () => {
   }
   expect(error.code).toBe("session_closed");
 });
+
+test("SessionManager waits for provider retirement before reusing a cancelled ChatGPT session", async () => {
+  initDatabase(":memory:");
+  const sessionStore = new SessionStore();
+  const messageStore = new MessageStore();
+  const turnStore = new TurnStore();
+  let starts = 0;
+  const turnIds: string[] = [];
+  let releaseCancelledTurn!: () => void;
+  const cancelledRetirement = new Promise<void>(resolve => { releaseCancelledTurn = resolve; });
+  const provider = {
+    name: "chatgpt-web",
+    capabilities: async () => ({ supportsImages: true, supportsTools: false, models: ["chatgpt-model"] }),
+    runTurn: async (request: any, ctx: { signal?: AbortSignal }) => {
+      starts += 1;
+      turnIds.push(request.requestId);
+      if (starts === 1) {
+        return await new Promise<any>(resolve => {
+          const onAbort = () => resolve({
+            requestId: request.requestId,
+            sessionId: request.sessionId,
+            turnId: request.requestId,
+            status: "cancelled" as const,
+            text: "",
+            error: { code: "client_cancelled", message: "cancelled", retryable: false },
+          });
+          if (ctx.signal?.aborted) onAbort();
+          else ctx.signal?.addEventListener("abort", onAbort, { once: true });
+        });
+      }
+      return {
+        requestId: request.requestId,
+        sessionId: request.sessionId,
+        turnId: request.requestId,
+        status: "completed" as const,
+        text: "second turn completed",
+      };
+    },
+    cancelTurn: async () => { await cancelledRetirement; },
+  };
+  const manager = new SessionManager(sessionStore, messageStore, turnStore, { "chatgpt-web": provider });
+  const session = await manager.create({ provider: "chatgpt-web", model: "chatgpt-model" });
+  const request = {
+    source: "mcp" as const,
+    model: { provider: "chatgpt-web", model: "chatgpt-model" },
+    messages: [{ id: "cancelled-user", role: "user" as const, content: [{ type: "text" as const, text: "cancel me" }], createdAt: new Date().toISOString() }],
+    stream: false,
+  };
+  const first = manager.send(session.id, request, { emit: () => undefined });
+  while (starts === 0) await Bun.sleep(1);
+  const cancellation = manager.cancel(session.id);
+  let cancellationSettled = false;
+  void cancellation.finally(() => { cancellationSettled = true; });
+  await Bun.sleep(10);
+  expect(cancellationSettled).toBe(false);
+  releaseCancelledTurn();
+  await cancellation;
+  await first;
+
+  const second = await manager.send(session.id, {
+    ...request,
+    messages: [{ ...request.messages[0], id: "second-user", content: [{ type: "text" as const, text: "continue" }] }],
+  }, { emit: () => undefined });
+  expect(second.status).toBe("completed");
+  expect((await manager.get(session.id)).status).toBe("ready");
+  expect(turnStore.get(turnIds[0]!)?.status).toBe("cancelled");
+  expect(turnStore.get(turnIds[1]!)?.status).toBe("completed");
+  expect(messageStore.listBySession(session.id).map(message => message.id)).toEqual(["second-user", `msg_${second.turnId}`]);
+  expect((await manager.get(session.id)).provider).toBe("chatgpt-web");
+  expect((await manager.get(session.id)).model).toBe("chatgpt-model");
+});
