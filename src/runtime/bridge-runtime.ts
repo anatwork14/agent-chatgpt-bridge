@@ -146,10 +146,9 @@ export async function createBridgeRuntime(
     assertCodexRouterDoesNotTargetBridge(codexRouterOptions.baseUrl, port);
   }
 
-  // Validate provider topology before opening persistent state so a configuration error cannot
-  // leave an otherwise-unused database handle behind.
-  initDatabase();
-
+  // Validate provider topology, policy, and initial model discovery before opening bridge-owned
+  // persistent state. A startup configuration error must not leave an otherwise-unused database
+  // handle or state directory behind.
   const provider = dependencies.provider
     ?? new ChatGPTWebConversationProvider(providerConfig(config));
   const registry = new ProviderRegistry([provider], dependencies.providerHealthPolicy);
@@ -160,6 +159,14 @@ export async function createBridgeRuntime(
   for (const additionalProvider of dependencies.additionalProviders ?? []) {
     registry.register(additionalProvider);
   }
+
+  // The primary provider controls the default model. Additional providers are opt-in by choosing
+  // one of their namespaced model IDs, so enabling codex-router cannot silently change behavior.
+  const primaryCapabilities = await provider.capabilities();
+  const defaultModel = preferredBridgeModel(primaryCapabilities.models);
+  const models = await registry.listModels();
+
+  initDatabase();
 
   const auditStore = new AuditStore();
   const modelRouter = new ModelRouterConversationProvider(
@@ -176,13 +183,7 @@ export async function createBridgeRuntime(
     },
   );
   const providers = registry.asRecord([modelRouter]);
-
-  // The primary provider controls the default model. Additional providers are opt-in by choosing
-  // one of their namespaced model IDs, so enabling codex-router cannot silently change behavior.
-  const primaryCapabilities = await provider.capabilities();
-  const defaultModel = preferredBridgeModel(primaryCapabilities.models);
   const defaultProvider = modelRouter.name;
-  const models = await registry.listModels();
 
   const turnStore = new TurnStore();
   const sessionManager = new SessionManager(
