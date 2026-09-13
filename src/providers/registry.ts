@@ -2,7 +2,11 @@ import type { BridgeTurnRequest, BridgeTurnResult } from "../core/domain";
 import type { BridgeEvent } from "../core/events";
 import { BridgeError } from "../core/errors";
 import type { ConversationProvider, ProviderCapabilities } from "./provider";
-import { ProviderHealthTracker, type ProviderHealthObservation } from "./health";
+import {
+  ProviderHealthTracker,
+  type ProviderHealthObservation,
+  type ProviderHealthTrackerOptions,
+} from "./health";
 import {
   DEFAULT_PROVIDER_ROUTING_POLICY,
   selectProviderRoute,
@@ -17,6 +21,22 @@ export type ProviderRouteDecisionObserver = (
   request: BridgeTurnRequest,
 ) => void | Promise<void>;
 
+export interface ProviderRegistryOptions extends ProviderHealthTrackerOptions {}
+
+function assertProviderNotCoolingDown(
+  providerName: string,
+  health: ProviderHealthTracker,
+): void {
+  const observation = health.get(providerName);
+  if (observation?.state !== "cooldown") return;
+  const suffix = observation.cooldownUntil ? ` until ${observation.cooldownUntil}` : "";
+  throw new BridgeError(
+    "provider_rate_limited",
+    `Provider ${providerName} is in cooldown${suffix}`,
+    true,
+  );
+}
+
 function observedProvider(
   delegate: ConversationProvider,
   health: ProviderHealthTracker,
@@ -25,6 +45,7 @@ function observedProvider(
     name: delegate.name,
 
     async capabilities(): Promise<ProviderCapabilities> {
+      assertProviderNotCoolingDown(delegate.name, health);
       try {
         const capabilities = await delegate.capabilities();
         health.recordSuccess(delegate.name, "discovery");
@@ -39,6 +60,7 @@ function observedProvider(
       request: BridgeTurnRequest,
       ctx: { signal?: AbortSignal; emit(event: BridgeEvent): void },
     ): Promise<BridgeTurnResult> {
+      assertProviderNotCoolingDown(delegate.name, health);
       try {
         const result = await delegate.runTurn(request, ctx);
         health.recordTurn(delegate.name, result);
@@ -52,6 +74,7 @@ function observedProvider(
 
   if (delegate.validateModel) {
     provider.validateModel = async (model: string): Promise<void> => {
+      assertProviderNotCoolingDown(delegate.name, health);
       try {
         await delegate.validateModel!(model);
         health.recordSuccess(delegate.name, "validation");
@@ -77,9 +100,13 @@ function observedProvider(
 
 export class ProviderRegistry {
   private readonly providers = new Map<string, ConversationProvider>();
-  private readonly health = new ProviderHealthTracker();
+  private readonly health: ProviderHealthTracker;
 
-  constructor(initial: readonly ConversationProvider[] = []) {
+  constructor(
+    initial: readonly ConversationProvider[] = [],
+    options: ProviderRegistryOptions = {},
+  ) {
+    this.health = new ProviderHealthTracker(() => new Date(), options);
     for (const provider of initial) this.register(provider);
   }
 
