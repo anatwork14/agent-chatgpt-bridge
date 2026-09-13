@@ -75,29 +75,81 @@ export function classifyProviderTurnResult(
   return undefined;
 }
 
+export interface ProviderHealthTrackerOptions {
+  rateLimitCooldownMs?: number;
+}
+
 export class ProviderHealthTracker {
   private readonly observations = new Map<string, ProviderHealthObservation>();
 
-  constructor(private readonly now: () => Date = () => new Date()) {}
+  constructor(
+    private readonly now: () => Date = () => new Date(),
+    private readonly options: ProviderHealthTrackerOptions = {},
+  ) {
+    const cooldownMs = options.rateLimitCooldownMs;
+    if (cooldownMs !== undefined && (!Number.isFinite(cooldownMs) || cooldownMs <= 0)) {
+      throw new BridgeError(
+        "invalid_request",
+        "rateLimitCooldownMs must be a positive finite number when configured",
+        false,
+      );
+    }
+  }
 
   private record(
     provider: string,
     state: ProviderHealthState,
     operation: ProviderHealthOperation,
     details: Pick<ProviderHealthObservation, "code" | "retryable" | "cooldownUntil"> = {},
+    observedAt: Date = this.now(),
   ): ProviderHealthObservation {
     const observation: ProviderHealthObservation = {
       provider,
       state,
       operation,
-      observedAt: this.now().toISOString(),
+      observedAt: observedAt.toISOString(),
       ...details,
     };
     this.observations.set(provider, observation);
     return { ...observation };
   }
 
+  private active(provider: string): ProviderHealthObservation | undefined {
+    const observation = this.observations.get(provider);
+    if (observation?.state !== "cooldown" || !observation.cooldownUntil) return observation;
+    const deadline = Date.parse(observation.cooldownUntil);
+    if (Number.isFinite(deadline) && deadline <= this.now().getTime()) {
+      // Expiry means "unknown until retried", not "healthy". Removing the stale observation lets
+      // the next real provider operation establish the new state without manufacturing success.
+      this.observations.delete(provider);
+      return undefined;
+    }
+    return observation;
+  }
+
+  private recordClassified(
+    provider: string,
+    classified: HealthClassification,
+    operation: ProviderHealthOperation,
+  ): ProviderHealthObservation {
+    const cooldownMs = this.options.rateLimitCooldownMs;
+    if (classified.state === "rate_limited" && cooldownMs !== undefined) {
+      const observedAt = this.now();
+      return this.record(provider, "cooldown", "policy", {
+        code: classified.code,
+        retryable: classified.retryable,
+        cooldownUntil: new Date(observedAt.getTime() + cooldownMs).toISOString(),
+      }, observedAt);
+    }
+    return this.record(provider, classified.state, operation, {
+      code: classified.code,
+      retryable: classified.retryable,
+    });
+  }
+
   recordSuccess(provider: string, operation: ProviderHealthOperation): ProviderHealthObservation {
+    const current = this.active(provider);
+    if (current?.state === "cooldown") return { ...current };
     return this.record(provider, "healthy", operation);
   }
 
@@ -108,20 +160,14 @@ export class ProviderHealthTracker {
   ): ProviderHealthObservation | undefined {
     const classified = classifyProviderError(error);
     if (!classified) return undefined;
-    return this.record(provider, classified.state, operation, {
-      code: classified.code,
-      retryable: classified.retryable,
-    });
+    return this.recordClassified(provider, classified, operation);
   }
 
   recordTurn(provider: string, result: BridgeTurnResult): ProviderHealthObservation | undefined {
     const classified = classifyProviderTurnResult(result);
     if (!classified) return undefined;
     if (classified.state === "healthy") return this.recordSuccess(provider, "turn");
-    return this.record(provider, classified.state, "turn", {
-      code: classified.code,
-      retryable: classified.retryable,
-    });
+    return this.recordClassified(provider, classified, "turn");
   }
 
   markCooldown(
@@ -137,14 +183,14 @@ export class ProviderHealthTracker {
   }
 
   get(provider: string): ProviderHealthObservation | undefined {
-    const observation = this.observations.get(provider);
+    const observation = this.active(provider);
     return observation ? { ...observation } : undefined;
   }
 
   list(providerOrder?: readonly string[]): ProviderHealthObservation[] {
-    if (!providerOrder) return [...this.observations.values()].map(value => ({ ...value }));
-    return providerOrder
-      .map(provider => this.observations.get(provider))
+    const providers = providerOrder ?? [...this.observations.keys()];
+    return providers
+      .map(provider => this.active(provider))
       .filter((value): value is ProviderHealthObservation => value !== undefined)
       .map(value => ({ ...value }));
   }
