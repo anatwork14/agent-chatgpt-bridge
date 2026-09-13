@@ -193,6 +193,72 @@ test("live bridge codex-router smoke verifies routed continuity through public R
   }
 }, 20_000);
 
+test("live bridge smoke does not treat a plain /v1 router base path as secret material", async () => {
+  const home = mkdtempSync(join(tmpdir(), "agent-chatgpt-live-smoke-public-v1-"));
+  writeConfig(home);
+  const sessions = new Map<string, SessionState>();
+  let nextSession = 1;
+
+  const bridge = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      if (!authenticated(request)) return Response.json({ error: { code: "authentication_required" } }, { status: 401 });
+      const url = new URL(request.url);
+      if (url.pathname === "/bridge/v1/healthz") {
+        return Response.json({ status: "ok", route: "/bridge/v1/healthz" });
+      }
+      if (url.pathname === "/bridge/v1/models") {
+        return Response.json({ models: [CHATGPT_MODEL, ROUTER_MODEL], route: "/bridge/v1/models" });
+      }
+      if (url.pathname === "/bridge/v1/sessions" && request.method === "POST") {
+        const body = await request.json() as { model?: string };
+        const state = newSession(sessions, `session_public_v1_${nextSession++}`, body.model || CHATGPT_MODEL);
+        return Response.json({ ...state, route: "/bridge/v1/sessions" }, { status: 201 });
+      }
+
+      const match = url.pathname.match(/^\/bridge\/v1\/sessions\/([^/]+)(\/messages|\/cancel)?$/);
+      if (!match) return new Response("not found", { status: 404 });
+      const id = decodeURIComponent(match[1]!);
+      const suffix = match[2] || "";
+      const session = sessions.get(id);
+      if (!session) return Response.json({ error: { code: "session_not_found" } }, { status: 404 });
+
+      if (!suffix && request.method === "GET") return Response.json({ ...session, route: "/bridge/v1/session" });
+      if (!suffix && request.method === "DELETE") {
+        sessions.delete(id);
+        return Response.json({ success: true, route: "/bridge/v1/session" });
+      }
+      if (suffix === "/messages" && request.method === "GET") {
+        return Response.json(session.transcript);
+      }
+      if (suffix === "/messages" && request.method === "POST") {
+        const body = await request.json() as { content?: Array<{ type?: string; text?: string }> };
+        const prompt = body.content?.find(part => part.type === "text")?.text || "";
+        return completedTurn(session, prompt);
+      }
+      if (suffix === "/cancel" && request.method === "POST") {
+        return Response.json({ success: true, cancelled: false });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
+
+  try {
+    const result = await runSmoke(home, bridge.port!, {
+      AGENT_CHATGPT_CODEX_ROUTER_BASE_URL: "http://127.0.0.1:4203/v1",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("LIVE_BRIDGE_CODEX_ROUTER_SMOKE_OK");
+    expect(result.stdout).toContain("capability_leak=none");
+    expect(sessions.size).toBe(0);
+  } finally {
+    bridge.stop(true);
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 20_000);
+
 test("live bridge smoke exercises optional cancellation and ChatGPT Web coexistence paths", async () => {
   const home = mkdtempSync(join(tmpdir(), "agent-chatgpt-live-smoke-optional-"));
   writeConfig(home);
