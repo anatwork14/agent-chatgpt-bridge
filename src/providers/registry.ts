@@ -6,10 +6,16 @@ import { ProviderHealthTracker, type ProviderHealthObservation } from "./health"
 import {
   DEFAULT_PROVIDER_ROUTING_POLICY,
   selectProviderRoute,
+  type ProviderRouteDecision,
   type ProviderRoutingPolicy,
 } from "./policy";
 
 export const MODEL_ROUTER_PROVIDER_NAME = "model-router";
+
+export type ProviderRouteDecisionObserver = (
+  decision: ProviderRouteDecision,
+  request: BridgeTurnRequest,
+) => void | Promise<void>;
 
 function observedProvider(
   delegate: ConversationProvider,
@@ -220,6 +226,7 @@ export class ModelRouterConversationProvider implements ConversationProvider {
   constructor(
     private readonly registry: ProviderRegistry,
     private readonly policy: ProviderRoutingPolicy = DEFAULT_PROVIDER_ROUTING_POLICY,
+    private readonly onRouteDecision?: ProviderRouteDecisionObserver,
   ) {}
 
   async capabilities(): Promise<ProviderCapabilities> {
@@ -258,6 +265,10 @@ export class ModelRouterConversationProvider implements ConversationProvider {
         true,
       );
     }
+
+    // The bridge records its routing decision before provider execution. If an injected observer
+    // cannot persist that decision, fail closed instead of creating an unaudited provider turn.
+    await this.onRouteDecision?.(decision, request);
 
     const result = await provider.runTurn({
       ...request,
