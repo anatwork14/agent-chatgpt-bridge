@@ -282,10 +282,11 @@ export class SessionManager {
       } catch (error) {
         const cancelled = controller.signal.aborted
           || (error instanceof DOMException && error.name === "AbortError");
+        const bridgeError = error instanceof BridgeError ? error : undefined;
         this.turnStore.update(turnId, {
           status: cancelled ? "cancelled" : "failed",
           completedAt: new Date().toISOString(),
-          errorCode: cancelled ? "client_cancelled" : "provider_exception",
+          errorCode: cancelled ? "client_cancelled" : bridgeError?.code ?? "provider_exception",
           errorMessage: error instanceof Error ? error.message : String(error),
         });
         throw error;

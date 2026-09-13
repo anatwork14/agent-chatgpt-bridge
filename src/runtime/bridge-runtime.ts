@@ -14,6 +14,8 @@ import { SessionManager } from "../core/session-manager";
 import { RunController } from "../core/run-controller";
 import { BridgeError } from "../core/errors";
 import type { ConversationProvider } from "../providers/provider";
+import type { ProviderHealthTrackerOptions } from "../providers/health";
+import type { ProviderRoutingPolicy } from "../providers/policy";
 import { ChatGPTWebConversationProvider } from "../providers/chatgpt-web/provider";
 import {
   CodexRouterConversationProvider,
@@ -25,6 +27,7 @@ import {
   ProviderRegistry,
 } from "../providers/registry";
 import { createBridgeApi } from "../protocols/rest/routes";
+import { createProviderHealthApi } from "../protocols/rest/provider-health";
 import { createResponsesApi } from "../protocols/responses/routes";
 import { AgentChatGptMcpServer } from "../protocols/mcp/server";
 
@@ -61,6 +64,10 @@ export interface BridgeRuntimeDependencies {
    * Pass false to disable environment discovery.
    */
   codexRouter?: CodexRouterProviderOptions | false;
+  /** Explicit health policy. Omitted means rate limits are observed but no cooldown timer is invented. */
+  providerHealthPolicy?: ProviderHealthTrackerOptions;
+  /** Explicit opt-in routing policy. Omitted means no provider/model fallback. */
+  routingPolicy?: ProviderRoutingPolicy;
   port?: number;
   apiToken?: string;
   requestShutdown?: () => void;
@@ -139,13 +146,12 @@ export async function createBridgeRuntime(
     assertCodexRouterDoesNotTargetBridge(codexRouterOptions.baseUrl, port);
   }
 
-  // Validate provider topology before opening persistent state so a configuration error cannot
-  // leave an otherwise-unused database handle behind.
-  initDatabase();
-
+  // Validate provider topology, policy, and initial model discovery before opening bridge-owned
+  // persistent state. A startup configuration error must not leave an otherwise-unused database
+  // handle or state directory behind.
   const provider = dependencies.provider
     ?? new ChatGPTWebConversationProvider(providerConfig(config));
-  const registry = new ProviderRegistry([provider]);
+  const registry = new ProviderRegistry([provider], dependencies.providerHealthPolicy);
 
   if (codexRouterOptions) {
     registry.register(new CodexRouterConversationProvider(codexRouterOptions));
@@ -154,15 +160,30 @@ export async function createBridgeRuntime(
     registry.register(additionalProvider);
   }
 
-  const modelRouter = new ModelRouterConversationProvider(registry);
-  const providers = registry.asRecord([modelRouter]);
-
   // The primary provider controls the default model. Additional providers are opt-in by choosing
   // one of their namespaced model IDs, so enabling codex-router cannot silently change behavior.
   const primaryCapabilities = await provider.capabilities();
   const defaultModel = preferredBridgeModel(primaryCapabilities.models);
-  const defaultProvider = modelRouter.name;
   const models = await registry.listModels();
+
+  initDatabase();
+
+  const auditStore = new AuditStore();
+  const modelRouter = new ModelRouterConversationProvider(
+    registry,
+    dependencies.routingPolicy,
+    (decision, request) => {
+      auditStore.log({
+        eventType: "provider.route",
+        sessionId: request.sessionId,
+        turnId: request.requestId,
+        payload: decision,
+        createdAt: new Date().toISOString(),
+      });
+    },
+  );
+  const providers = registry.asRecord([modelRouter]);
+  const defaultProvider = modelRouter.name;
 
   const turnStore = new TurnStore();
   const sessionManager = new SessionManager(
@@ -177,7 +198,7 @@ export async function createBridgeRuntime(
   const runController = new RunController(
     runStore,
     sessionManager,
-    new AuditStore(),
+    auditStore,
     (id, command) => {
       if (id !== "subprocess-jsonl") {
         throw new BridgeError("agent_adapter_failed", `Unsupported agent adapter: ${id}`, false);
@@ -204,6 +225,10 @@ export async function createBridgeRuntime(
     listRuns: () => runStore.list(),
     requestShutdown: dependencies.requestShutdown,
   });
+  const providerHealthApi = createProviderHealthApi({
+    apiToken,
+    listProviderHealth: () => registry.providerHealth(),
+  });
   const responsesApi = createResponsesApi(sessionManager, {
     apiToken,
     defaultProvider,
@@ -213,6 +238,7 @@ export async function createBridgeRuntime(
   });
   const api = new Hono();
   api.route("/", bridgeApi);
+  api.route("/", providerHealthApi);
   api.route("/", responsesApi);
 
   const mcp = new AgentChatGptMcpServer(sessionManager, {

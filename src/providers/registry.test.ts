@@ -97,7 +97,6 @@ test("provider registry lists a deduplicated namespaced catalog", async () => {
     new StubProvider("chatgpt-web", ["chatgpt-web/high", "shared/model"]),
     new StubProvider("codex-router", ["codex-router/deepseek/v4", "shared/model"]),
   ]);
-
   expect(await registry.listModels()).toEqual([
     "chatgpt-web/high",
     "shared/model",
@@ -110,7 +109,6 @@ test("provider discovery isolates degraded optional providers", async () => {
     new StubProvider("chatgpt-web", ["chatgpt-web/high"]),
     new FailingProvider("codex-router", "router offline"),
   ]);
-
   expect(await registry.listModels()).toEqual(["chatgpt-web/high"]);
   await expect(registry.listModels({ strict: true })).rejects.toThrow("router offline");
 });
@@ -120,7 +118,6 @@ test("targeted model validation does not touch an unrelated degraded provider", 
     new StubProvider("chatgpt-web", ["chatgpt-web/high"]),
     new FailingProvider("codex-router", "router offline"),
   ]);
-
   await expect(registry.validateModel("chatgpt-web/high")).resolves.toBeUndefined();
 });
 
@@ -129,7 +126,6 @@ test("targeted model validation surfaces failure from the selected provider", as
     new StubProvider("chatgpt-web", ["chatgpt-web/high"]),
     new FailingProvider("codex-router", "router offline"),
   ]);
-
   await expect(registry.validateModel("codex-router/deepseek/v4")).rejects.toThrow("router offline");
 });
 
@@ -143,8 +139,12 @@ test("model router delegates to exactly one concrete provider", async () => {
   const result = await router.runTurn(request("codex-router/deepseek/v4"), { emit: () => undefined });
   expect(result.text).toBe("deepseek");
   expect(result.providerMetadata).toEqual({
-    routedProvider: "codex-router",
     concrete: "codex-router",
+    routedProvider: "codex-router",
+    routedModel: "codex-router/deepseek/v4",
+    requestedProvider: "codex-router",
+    requestedModel: "codex-router/deepseek/v4",
+    fallback: false,
   });
 });
 
