@@ -1,6 +1,6 @@
 # Implementation Progress
 
-Last updated: 2026-09-12
+Last updated: 2026-09-13
 
 ## Completed
 
@@ -33,13 +33,28 @@ Last updated: 2026-09-12
 - Real child-process bridge integration test covering CLI/server/auth/model discovery/two routed turns/history/shutdown.
 - Codex-router SSE parser hardened for CRLF frame delimiters split across transport chunks, with regression coverage.
 - Pinned real codex-router process integration added to CI.
-- CI run #141 fully green on macOS 15, Ubuntu latest, and Windows latest at `367844d`.
 - Native launcher packaging and packaged-app smoke green on macOS, Ubuntu, and Windows.
 - Live bridge-level codex-router verifier added for real routed continuity, transcript persistence, model pinning, capability leak detection, optional cancellation, and optional ChatGPT Web coexistence.
+- P2 provider-health state machine: `healthy`, `unavailable`, `rate_limited`, `cooldown`, `misconfigured`.
+- Secret-safe health observations for discovery, validation, turns, and explicit policy state.
+- Authenticated read-only `/bridge/v1/providers/health` endpoint.
+- Explicit provider routing policy with fallback disabled by default.
+- Ordered fallback only for explicitly configured trigger states; no mid-turn or implicit retry/fallback.
+- Explicit rate-limit cooldown policy with local enforcement and deterministic expiry semantics.
+- Direct-provider and model-router traffic share the same health enforcement boundary.
+- Bridge-owned `provider.route` decisions are persisted before provider execution; audit failure is fail-closed.
+- Fallback turns do not migrate the persistent session provider/model identity.
+- Explicit fallback models are validated before route execution; nonexistent or invalid routes fail closed.
+- Structured `BridgeError` codes are preserved in terminal turn persistence.
+- Startup provider/policy validation runs before bridge-owned SQLite is opened.
 
 ## Deterministic validation status
 
-CI run #141 validated the P1 deterministic gates on macOS, Ubuntu, and Windows:
+### P1 — codex-router provider plane
+
+P1 validated head: `74d7826`.
+
+CI run #149 passed completely on macOS 15, Ubuntu latest, and Windows latest, including:
 
 ```text
 [x] typecheck
@@ -51,25 +66,48 @@ CI run #141 validated the P1 deterministic gates on macOS, Ubuntu, and Windows:
 [x] child-process codex-router bridge integration
 [x] pinned real codex-router process integration
 [x] CRLF split-boundary SSE regression
+[x] live-verifier deterministic subprocess coverage
 ```
 
-The deterministic codex-router coverage now includes two complementary paths:
+The deterministic codex-router coverage includes two complementary paths:
 
 1. a real `agent-chatgpt serve` child process with a deterministic local HTTP/SSE router peer, verifying public bridge surfaces and canonical history ownership;
 2. a pinned real codex-router process with a deterministic fake upstream, verifying the actual router transport boundary without requiring external provider credentials.
 
-Together they verify:
+Together they verify authenticated bridge startup, combined model discovery, explicit routed session creation, two-turn canonical history, no provider/model migration, Responses streaming translation, split CRLF framing, real codex-router transport, cancellation plumbing, and authenticated process cleanup.
 
-- authenticated bridge startup;
-- combined `chatgpt-web/...` + `codex-router/...` model discovery;
-- explicit routed session creation;
-- two routed CLI turns;
-- canonical persisted history replay on the second turn;
-- no provider/model migration;
-- Responses streaming translation;
-- split CRLF framing across transport chunks;
-- real codex-router model discovery and routed request transport;
-- authenticated bridge shutdown and process cleanup.
+### P2 — provider health and explicit policy
+
+P2 validated implementation head: `7edb493`.
+
+CI run #178 passed completely on macOS 15, Ubuntu latest, and Windows latest. The dedicated pinned real codex-router process job and actionlint also passed.
+
+The P2 deterministic checkpoint verifies:
+
+```text
+[x] five bridge-level health states
+[x] raw provider diagnostics excluded from health observations
+[x] cancellation/caller errors remain health-neutral
+[x] authenticated provider-health REST surface
+[x] fallback disabled by default
+[x] explicit ordered fallback with explicit trigger states
+[x] no opportunistic mid-turn fallback
+[x] retryable fallback-candidate resolution may continue through explicit order
+[x] non-retryable ambiguity/configuration failures stop immediately
+[x] explicit fallback model validation before execution
+[x] optional explicit rate-limit cooldown
+[x] cooldown blocks concrete-provider calls locally
+[x] cooldown expiry does not manufacture a healthy observation
+[x] direct concrete-provider sessions obey health/cooldown enforcement
+[x] route decision persisted before provider execution
+[x] audit persistence failure prevents provider execution
+[x] fallback does not mutate persistent session identity
+[x] structured provider error codes preserved in turn persistence
+[x] invalid health policy fails before bridge SQLite is opened
+[x] package/smoke stages green on all three CI platforms
+```
+
+P2 remains stacked on P1. This deterministic checkpoint does not convert P1's live-only validation gates into CI evidence and does not make either draft PR release-ready by itself.
 
 ## Live validation still required
 
@@ -94,7 +132,7 @@ These cannot be honestly proven by fake-provider or deterministic CI alone:
 - real 429/provider-error propagation when safely reproducible
 - confirmation that caller-capability URL material never appears in live bridge responses/errors
 
-The live codex-router work is now substantially automated by:
+The live codex-router work is substantially automated by:
 
 ```sh
 bun run smoke:codex-router
@@ -110,15 +148,18 @@ AGENT_CHATGPT_CODEX_ROUTER_SMOKE_CHATGPT=1
 
 See `docs/release-validation-agent-bridge.md` and `docs/CODEX_ROUTER_SMOKE.md`.
 
-## Remaining hardening
+## Remaining hardening / sequencing
 
-- Run the current branch CI after the new live-verifier tooling changes.
 - Perform the live validation checklist above before calling P1 fully proven.
-- Keep real provider-side 429 validation conditional on a safe test mechanism; deterministic mapping/no-fallback coverage already exists and paid-account exhaustion must not be used as a test strategy.
+- Keep real provider-side 429 validation conditional on a safe test mechanism; paid-account exhaustion must not be used to manufacture the condition.
+- Keep PR #2 and stacked PR #3 draft while P1 live sign-off is outstanding.
+- Do not start P3 ACP/agent-adapter work as if P1/P2 release sign-off were complete. P2 deterministic implementation is validated, but milestone sequencing remains explicit.
 
 ## Known design note
 
 The generic `agent-chatgpt serve` composition currently owns its local bridge listener while preserving the original upstream Codex daemon separately. Both reuse the same upstream browser/provider implementation. A future single-listener composition is possible, but should only be attempted as a small lifecycle injection after release gates are green; it is not worth destabilizing the inherited `/v1` server or browser worker during core validation.
+
+The P2 routing policy is intentionally an injected bridge policy rather than a new role-level collaboration-policy DSL. Role routing and richer collaboration policy belong to later milestones and were not pulled forward into P2.
 
 ## Definition-of-done tracking
 
@@ -143,10 +184,17 @@ The generic `agent-chatgpt serve` composition currently owns its local bridge li
 [x] child-process bridge/router integration test
 [x] pinned real codex-router process integration
 [x] codex-router CRLF split-boundary parser regression fixed
-[x] latest validated three-OS CI fully green
-[x] package/smoke stages green on latest validated runtime head
+[x] P1 deterministic three-OS CI fully green
+[x] P2 provider-health state machine
+[x] P2 authenticated provider-health API
+[x] P2 explicit-only fallback policy
+[x] P2 enforced optional cooldown
+[x] P2 auditable route decisions
+[x] P2 no persistent session migration on fallback
+[x] P2 deterministic three-OS CI fully green
 [ ] live authenticated persistent-session test
 [ ] live MCP test
 [ ] live autonomous two-round test
 [ ] live codex-router smoke checklist
+[ ] P3 ACP agent adapters
 ```
