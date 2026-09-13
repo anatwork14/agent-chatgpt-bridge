@@ -105,6 +105,21 @@ Example:
 }
 ```
 
+For a persistent ACP v1 agent, select a built-in profile or provide a custom ACP command:
+
+```json
+{
+  "objective": "Review the parser race",
+  "agent_adapter": {
+    "type": "acp:cursor",
+    "permission_mode": "deny"
+  },
+  "chatgpt": { "session_id": "ses_..." }
+}
+```
+
+The built-in ACP profile types are `acp:cursor`, `acp:gemini`, and `acp:claude`. A custom profile uses `"type": "acp"` and a non-empty `command` array. The optional permission modes are `deny` and `allow_readonly` on the REST surface. `delegate` is reserved for embedded callers that provide a resolver; it cannot be represented as a REST function. ACP runs retain one ACP session across rounds, advertise no filesystem/terminal/MCP callbacks, and do not import agent-client credentials.
+
 Hard maximum rounds: 100.
 
 ### `GET /runs/{id}`
@@ -136,6 +151,6 @@ Bridge errors use a stable shape:
 }
 ```
 
-Representative codes include `invalid_request`, `session_not_found`, `session_closed`, `session_busy`, `model_unavailable`, `authentication_required`, `browser_not_ready`, `browser_ui_drift`, `browser_turn_timeout`, `client_cancelled`, `run_budget_exhausted`, `agent_adapter_failed`, `agent_adapter_timeout`, and `agent_protocol_invalid`.
+Representative codes include `invalid_request`, `session_not_found`, `session_closed`, `session_busy`, `model_unavailable`, `authentication_required`, `browser_not_ready`, `browser_ui_drift`, `browser_turn_timeout`, `client_cancelled`, `run_budget_exhausted`, `agent_adapter_failed`, `agent_adapter_timeout`, `agent_protocol_invalid`, and `agent_permission_denied`.
 
 The public API does not intentionally expose raw internal stack traces.

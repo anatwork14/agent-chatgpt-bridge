@@ -35,6 +35,9 @@ Usage:
   agent-chatgpt ask [--session SESSION] [--model MODEL] [--effort EFFORT]
                     [--stdin] [--prompt-prefix TEXT] [--quiet-session] [--json] [MESSAGE]
   agent-chatgpt run --objective TEXT --agent-command PATH
+                    [--agent-adapter subprocess-jsonl|acp|acp:PROFILE]
+                    [--agent-profile cursor|gemini|claude]
+                    [--permission-mode deny|allow_readonly]
                     [--session SESSION | --model MODEL] [--effort EFFORT]
                     [--max-rounds N] [--max-wall-clock-ms N] [--json]
   agent-chatgpt run list [--json]
@@ -333,6 +336,10 @@ async function runCommand(args: string[], client: ClientConfig, json: boolean): 
 
   const objective = takeOption(args, "--objective");
   const agentCommand = takeOption(args, "--agent-command");
+  const agentProfile = takeOption(args, "--agent-profile");
+  const agentAdapter = takeOption(args, "--agent-adapter")
+    ?? (agentProfile ? `acp:${agentProfile}` : undefined);
+  const permissionMode = takeOption(args, "--permission-mode");
   const sessionId = takeOption(args, "--session");
   const model = takeOption(args, "--model");
   const effort = takeOption(args, "--effort");
@@ -340,7 +347,16 @@ async function runCommand(args: string[], client: ClientConfig, json: boolean): 
   const maxWallClockMs = numericOption(args, "--max-wall-clock-ms");
   const maxConsecutiveFailures = numericOption(args, "--max-consecutive-failures");
   if (!objective) throw new Error("run requires --objective TEXT");
-  if (!agentCommand) throw new Error("run requires --agent-command PATH");
+  const resolvedAgentAdapter = agentAdapter ?? "subprocess-jsonl";
+  if (resolvedAgentAdapter === "subprocess-jsonl" && !agentCommand) {
+    throw new Error("run requires --agent-command PATH for the subprocess-jsonl adapter");
+  }
+  if (resolvedAgentAdapter !== "subprocess-jsonl" && !resolvedAgentAdapter.startsWith("acp:") && resolvedAgentAdapter !== "acp") {
+    throw new Error("--agent-adapter must be subprocess-jsonl, acp, or acp:PROFILE");
+  }
+  if (permissionMode !== undefined && permissionMode !== "deny" && permissionMode !== "allow_readonly") {
+    throw new Error("--permission-mode must be deny or allow_readonly");
+  }
   if (sessionId && (model || effort)) {
     throw new Error("run --model/--effort cannot override an existing --session model");
   }
@@ -351,8 +367,9 @@ async function runCommand(args: string[], client: ClientConfig, json: boolean): 
     body: JSON.stringify({
       objective,
       agent_adapter: {
-        type: "subprocess-jsonl",
-        command: [agentCommand],
+        type: resolvedAgentAdapter,
+        command: agentCommand ? [agentCommand] : undefined,
+        permission_mode: permissionMode,
       },
       chatgpt: sessionId ? { session_id: sessionId } : { model, effort },
       budget: {

@@ -3,6 +3,9 @@ import { Hono } from "hono";
 import type { AppConfig } from "../config";
 import { providerConfig } from "../config";
 import { SubprocessJsonlAdapter } from "../agents/subprocess-jsonl";
+import { AcpAgentAdapter } from "../agents/acp/adapter";
+import { resolveAcpProfile } from "../agents/acp/profiles";
+import type { AcpAgentAdapterOptions, AcpPermissionMode, AcpPermissionResolver } from "../agents/acp/types";
 import { closeChatGptBrowserWorkers } from "../adapters/chatgpt-web/browser-worker";
 import { AuditStore } from "../persistence/audit-store";
 import { closeDatabase, initDatabase } from "../persistence/database";
@@ -71,6 +74,8 @@ export interface BridgeRuntimeDependencies {
   port?: number;
   apiToken?: string;
   requestShutdown?: () => void;
+  /** Optional embedded permission resolver for ACP `delegate` mode. */
+  acpPermissionResolver?: AcpPermissionResolver;
 }
 
 export function bridgeApiToken(config: Pick<AppConfig, "controlToken">): string {
@@ -199,18 +204,57 @@ export async function createBridgeRuntime(
     runStore,
     sessionManager,
     auditStore,
-    (id, command) => {
-      if (id !== "subprocess-jsonl") {
-        throw new BridgeError("agent_adapter_failed", `Unsupported agent adapter: ${id}`, false);
+    (id, command, adapterConfig) => {
+      if (id === "subprocess-jsonl") {
+        if (adapterConfig?.permissionMode !== undefined) {
+          throw new BridgeError(
+            "invalid_request",
+            "agent_adapter.permission_mode is only supported by ACP agents",
+            false,
+          );
+        }
+        if (!command?.length) {
+          throw new BridgeError(
+            "agent_protocol_invalid",
+            "subprocess-jsonl requires a non-empty command array",
+            false,
+          );
+        }
+        return new SubprocessJsonlAdapter(command);
       }
-      if (!command?.length) {
-        throw new BridgeError(
-          "agent_protocol_invalid",
-          "subprocess-jsonl requires a non-empty command array",
-          false,
-        );
+      if (id === "acp" || id.startsWith("acp:")) {
+        const profileId = id === "acp" ? (adapterConfig?.profile ?? "custom") : id.slice("acp:".length);
+        if (adapterConfig?.permissionMode === "delegate" && !dependencies.acpPermissionResolver) {
+          throw new BridgeError(
+            "invalid_request",
+            "ACP delegate permission mode requires an in-process permission resolver",
+            false,
+          );
+        }
+        if (adapterConfig?.permissionMode !== undefined
+          && adapterConfig.permissionMode !== "deny"
+          && adapterConfig.permissionMode !== "allow_readonly"
+          && adapterConfig.permissionMode !== "delegate") {
+          throw new BridgeError("invalid_request", "Invalid ACP permission mode", false);
+        }
+        const options: AcpAgentAdapterOptions = {
+          permissionMode: adapterConfig?.permissionMode as AcpPermissionMode | undefined,
+          permissionResolver: dependencies.acpPermissionResolver,
+          audit: event => auditStore.log({
+            eventType: event.eventType,
+            runId: event.runId,
+            payload: event.payload,
+            createdAt: new Date().toISOString(),
+          }),
+        };
+        try {
+          return new AcpAgentAdapter(resolveAcpProfile(profileId, command, options), options);
+        } catch (error) {
+          if (error instanceof BridgeError) throw error;
+          throw new BridgeError("agent_protocol_invalid", "Invalid ACP agent profile configuration", false);
+        }
       }
-      return new SubprocessJsonlAdapter(command);
+      throw new BridgeError("agent_adapter_failed", `Unsupported agent adapter: ${id}`, false);
     },
   );
 

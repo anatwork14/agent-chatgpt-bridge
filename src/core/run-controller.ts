@@ -4,6 +4,7 @@ import type {
   AgentDecision,
   AgentTurnInput,
   BridgeMessage,
+  ExternalAgentAdapterConfig,
 } from "./domain";
 import { generateId, generateRunId } from "./ids";
 import type { RunStore } from "../persistence/run-store";
@@ -52,7 +53,11 @@ export class RunController {
     private readonly runStore: RunStore,
     private readonly sessionManager: SessionManager,
     private readonly auditStore: AuditStore,
-    private readonly getAgentAdapter: (id: string, command?: string[]) => ExternalAgentAdapter,
+    private readonly getAgentAdapter: (
+      id: string,
+      command?: string[],
+      config?: ExternalAgentAdapterConfig,
+    ) => ExternalAgentAdapter,
   ) {}
 
   async startRun(
@@ -61,6 +66,7 @@ export class RunController {
     agentAdapterId: string,
     command?: string[],
     budgetOverrides?: Partial<CollaborationRun["budget"]>,
+    agentAdapterConfig?: ExternalAgentAdapterConfig,
   ): Promise<CollaborationRun> {
     const session = await this.sessionManager.get(sessionId);
     if (session.status === "closed" || session.status === "closing") {
@@ -114,7 +120,7 @@ export class RunController {
     const controller = new AbortController();
     this.activeRuns.set(run.id, controller);
 
-    const settlement = this.runLoop(run, command, controller.signal)
+    const settlement = this.runLoop(run, command, agentAdapterConfig, controller.signal)
       .catch(error => {
         const current = this.runStore.get(run.id);
         if (current && current.status === "running") {
@@ -227,10 +233,11 @@ export class RunController {
   private async runLoop(
     run: CollaborationRun,
     command: string[] | undefined,
+    agentAdapterConfig: ExternalAgentAdapterConfig | undefined,
     signal: AbortSignal,
   ): Promise<void> {
     let consecutiveFailures = 0;
-    const adapter = this.getAgentAdapter(run.agentAdapterId, command);
+    const adapter = this.getAgentAdapter(run.agentAdapterId, command, agentAdapterConfig);
     const startTime = Date.now();
     let lastChatGptResponse: AgentTurnInput["lastChatGptResponse"];
 
