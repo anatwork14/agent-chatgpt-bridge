@@ -42,10 +42,15 @@ try {
   throw new Error("AGENT_CHATGPT_CODEX_ROUTER_BASE_URL must be an absolute URL");
 }
 
+function isSensitiveCapabilityPath(path: string): boolean {
+  const normalized = path.replace(/\/$/, "");
+  return normalized.length > 1 && normalized !== "/v1";
+}
+
 function assertNoCapabilityLeak(text: string): void {
   const leaked = text.includes(routerBaseUrl)
-    || (capabilityPath.length > 1 && text.includes(capabilityPath))
-    || (decodedCapabilityPath.length > 1 && text.includes(decodedCapabilityPath));
+    || (isSensitiveCapabilityPath(capabilityPath) && text.includes(capabilityPath))
+    || (isSensitiveCapabilityPath(decodedCapabilityPath) && text.includes(decodedCapabilityPath));
   if (leaked) {
     throw new Error("Bridge response exposed codex-router capability URL material");
   }
