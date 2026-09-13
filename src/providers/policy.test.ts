@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import type { BridgeTurnRequest, BridgeTurnResult } from "../core/domain";
+import { BridgeError } from "../core/errors";
 import type { ConversationProvider, ProviderCapabilities } from "./provider";
 import type { ProviderHealthObservation } from "./health";
 import {
@@ -145,6 +146,53 @@ test("ordered fallback skips candidates already known degraded", async () => {
   expect(decision.selectedModel).toBe("local/qwen");
   expect(decision.selectedProvider).toBe("local");
   expect(decision.fallback).toBe(true);
+});
+
+test("ordered fallback continues after a retryable candidate resolution failure", async () => {
+  const policy: ProviderRoutingPolicy = {
+    fallback: {
+      mode: "ordered",
+      models: ["chatgpt-web/high", "local/qwen"],
+      on: ["unavailable"],
+    },
+  };
+  const resolving = async (model: string): Promise<ConversationProvider> => {
+    if (model === "chatgpt-web/high") {
+      throw new BridgeError("provider_unavailable", "temporary outage", true);
+    }
+    return resolveModel(model);
+  };
+
+  const decision = await selectProviderRoute(
+    "codex-router/deepseek/v4",
+    router,
+    [observation("codex-router", "unavailable")],
+    resolving,
+    policy,
+  );
+  expect(decision.selectedModel).toBe("local/qwen");
+  expect(decision.selectedProvider).toBe("local");
+});
+
+test("ordered fallback does not hide non-retryable route ambiguity or configuration errors", async () => {
+  const policy: ProviderRoutingPolicy = {
+    fallback: {
+      mode: "ordered",
+      models: ["chatgpt-web/high", "local/qwen"],
+      on: ["unavailable"],
+    },
+  };
+  const ambiguous = async (): Promise<ConversationProvider> => {
+    throw new BridgeError("session_conflict", "ambiguous route", false);
+  };
+
+  await expect(selectProviderRoute(
+    "codex-router/deepseek/v4",
+    router,
+    [observation("codex-router", "unavailable")],
+    ambiguous,
+    policy,
+  )).rejects.toMatchObject({ code: "session_conflict", retryable: false });
 });
 
 test("ordered fallback fails closed when no configured route is eligible", async () => {
