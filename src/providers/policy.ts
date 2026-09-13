@@ -67,6 +67,10 @@ function validateOrderedPolicy(policy: Extract<ProviderFallbackPolicy, { mode: "
   }
 }
 
+function retryableCandidateResolutionFailure(error: unknown): boolean {
+  return error instanceof BridgeError && error.retryable === true;
+}
+
 /**
  * Selects a route only from explicit policy plus bridge-level health observations.
  *
@@ -97,7 +101,17 @@ export async function selectProviderRoute(
 
   for (const model of policy.fallback.models) {
     if (model === requestedModel) continue;
-    const provider = await resolveModel(model);
+
+    let provider: ConversationProvider;
+    try {
+      provider = await resolveModel(model);
+    } catch (error) {
+      // Ordered policy may move past a transiently unavailable candidate. Configuration and
+      // ambiguity errors remain hard failures so a typo or unsafe route is never silently hidden.
+      if (retryableCandidateResolutionFailure(error)) continue;
+      throw error;
+    }
+
     const candidateState = currentState(health, provider.name);
     if (degraded(candidateState)) continue;
     return {
