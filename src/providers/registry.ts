@@ -129,6 +129,7 @@ export class ProviderRegistry {
 
 export class ModelRouterConversationProvider implements ConversationProvider {
   public readonly name = MODEL_ROUTER_PROVIDER_NAME;
+  private readonly activeTurns = new Map<string, { turnId: string; provider: ConversationProvider }>();
 
   constructor(private readonly registry: ProviderRegistry) {}
 
@@ -151,19 +152,31 @@ export class ModelRouterConversationProvider implements ConversationProvider {
     ctx: { signal?: AbortSignal; emit(event: BridgeEvent): void },
   ): Promise<BridgeTurnResult> {
     const provider = await this.registry.resolveModel(request.model.model);
-    const result = await provider.runTurn({
-      ...request,
-      model: {
-        ...request.model,
-        provider: provider.name,
-      },
-    }, ctx);
-    return {
-      ...result,
-      providerMetadata: {
-        routedProvider: provider.name,
-        ...(result.providerMetadata ?? {}),
-      },
-    };
+    this.activeTurns.set(request.sessionId, { turnId: request.requestId, provider });
+    try {
+      const result = await provider.runTurn({
+        ...request,
+        model: {
+          ...request.model,
+          provider: provider.name,
+        },
+      }, ctx);
+      return {
+        ...result,
+        providerMetadata: {
+          routedProvider: provider.name,
+          ...(result.providerMetadata ?? {}),
+        },
+      };
+    } finally {
+      const active = this.activeTurns.get(request.sessionId);
+      if (active?.turnId === request.requestId) this.activeTurns.delete(request.sessionId);
+    }
+  }
+
+  async cancelTurn(sessionId: string, turnId: string): Promise<void> {
+    const active = this.activeTurns.get(sessionId);
+    if (active?.turnId !== turnId) return;
+    await active.provider.cancelTurn?.(sessionId, turnId);
   }
 }

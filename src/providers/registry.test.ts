@@ -47,6 +47,35 @@ class FailingProvider implements ConversationProvider {
   }
 }
 
+class CancelableProvider implements ConversationProvider {
+  public readonly name = "chatgpt-web";
+  public readonly cancellations: string[] = [];
+  public release!: () => void;
+
+  async capabilities(): Promise<ProviderCapabilities> {
+    return { supportsImages: false, supportsTools: false, models: ["chatgpt-web/high"] };
+  }
+
+  async runTurn(
+    request: BridgeTurnRequest,
+    _ctx: { signal?: AbortSignal; emit(event: BridgeEvent): void },
+  ): Promise<BridgeTurnResult> {
+    await new Promise<void>(resolve => { this.release = resolve; });
+    return {
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      turnId: request.requestId,
+      status: "completed",
+      text: "released",
+    };
+  }
+
+  async cancelTurn(sessionId: string, turnId: string): Promise<void> {
+    this.cancellations.push(`${sessionId}:${turnId}`);
+    this.release();
+  }
+}
+
 function request(model: string): BridgeTurnRequest {
   return {
     requestId: "turn_registry",
@@ -117,6 +146,19 @@ test("model router delegates to exactly one concrete provider", async () => {
     routedProvider: "codex-router",
     concrete: "codex-router",
   });
+});
+
+test("model router delegates cancellation to the concrete active provider", async () => {
+  const provider = new CancelableProvider();
+  const router = new ModelRouterConversationProvider(new ProviderRegistry([provider]));
+  const pending = router.runTurn(request("chatgpt-web/high"), { emit: () => undefined });
+  for (let attempt = 0; attempt < 20 && !provider.release; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
+
+  await router.cancelTurn("ses_registry", "turn_registry");
+  await expect(pending).resolves.toMatchObject({ status: "completed" });
+  expect(provider.cancellations).toEqual(["ses_registry:turn_registry"]);
 });
 
 test("model router fails closed when no provider owns a model", async () => {
