@@ -5,6 +5,7 @@ import { MessageStore } from "../persistence/message-store";
 import { TurnStore } from "../persistence/turn-store";
 import { SessionManager } from "./session-manager";
 import { FakeConversationProvider } from "../providers/fake/provider";
+import { BridgeError } from "./errors";
 
 afterEach(() => {
   closeDatabase();
@@ -115,4 +116,39 @@ test("SessionManager cancel and close", async () => {
     error = e;
   }
   expect(error.code).toBe("session_closed");
+});
+
+test("SessionManager preserves a thrown BridgeError code in turn persistence", async () => {
+  initDatabase(":memory:");
+  const sessionStore = new SessionStore();
+  const messageStore = new MessageStore();
+  const turnStore = new TurnStore();
+  const provider = {
+    name: "limited",
+    capabilities: async () => ({ supportsImages: false, supportsTools: false, models: ["limited/model"] }),
+    runTurn: async () => {
+      throw new BridgeError("provider_rate_limited", "Provider is cooling down", true);
+    },
+  };
+  const manager = new SessionManager(sessionStore, messageStore, turnStore, {
+    limited: provider,
+  });
+  const session = await manager.create({ provider: "limited", model: "limited/model" });
+
+  await expect(manager.send(session.id, {
+    requestId: "turn_structured_provider_error",
+    source: "internal",
+    model: { provider: "limited", model: "limited/model" },
+    messages: [],
+    stream: false,
+  }, { emit: () => undefined })).rejects.toMatchObject({
+    code: "provider_rate_limited",
+    retryable: true,
+  });
+
+  expect(turnStore.get("turn_structured_provider_error")).toMatchObject({
+    status: "failed",
+    errorCode: "provider_rate_limited",
+    errorMessage: "Provider is cooling down",
+  });
 });
