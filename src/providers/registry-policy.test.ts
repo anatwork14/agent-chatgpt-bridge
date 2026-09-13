@@ -47,6 +47,10 @@ function request(model: string): BridgeTurnRequest {
   };
 }
 
+function futureCooldown(): Date {
+  return new Date(Date.now() + 60_000);
+}
+
 const ctx = { emit: (_event: BridgeEvent) => undefined };
 
 test("default model-router never falls back from a provider in cooldown", async () => {
@@ -58,21 +62,14 @@ test("default model-router never falls back from a provider in cooldown", async 
   const fallback = new RoutedProvider("chatgpt-web", ["chatgpt-web/high"], "fallback");
   const registry = new ProviderRegistry([primary, fallback]);
   await registry.listModels();
-  registry.markProviderCooldown("codex-router", new Date("2026-09-13T00:10:00.000Z"));
+  registry.markProviderCooldown("codex-router", futureCooldown());
 
   const router = new ModelRouterConversationProvider(registry);
-  const result = await router.runTurn(request("codex-router/deepseek/v4"), ctx);
+  await expect(router.runTurn(request("codex-router/deepseek/v4"), ctx))
+    .rejects.toMatchObject({ code: "provider_rate_limited", retryable: true });
 
-  expect(result.text).toBe("primary");
-  expect(primary.turns).toBe(1);
+  expect(primary.turns).toBe(0);
   expect(fallback.turns).toBe(0);
-  expect(result.providerMetadata).toMatchObject({
-    routedProvider: "codex-router",
-    routedModel: "codex-router/deepseek/v4",
-    requestedProvider: "codex-router",
-    requestedModel: "codex-router/deepseek/v4",
-    fallback: false,
-  });
 });
 
 test("explicit model-router policy may route a degraded provider to an ordered fallback", async () => {
@@ -84,7 +81,7 @@ test("explicit model-router policy may route a degraded provider to an ordered f
   const fallback = new RoutedProvider("chatgpt-web", ["chatgpt-web/high"], "fallback");
   const registry = new ProviderRegistry([primary, fallback]);
   await registry.listModels();
-  registry.markProviderCooldown("codex-router", new Date("2026-09-13T00:10:00.000Z"));
+  registry.markProviderCooldown("codex-router", futureCooldown());
 
   const policy: ProviderRoutingPolicy = {
     fallback: {
@@ -120,8 +117,8 @@ test("explicit fallback skips a candidate already observed as degraded", async (
   const second = new RoutedProvider("local", ["local/qwen"], "second");
   const registry = new ProviderRegistry([primary, first, second]);
   await registry.listModels();
-  registry.markProviderCooldown("codex-router", new Date("2026-09-13T00:10:00.000Z"));
-  registry.markProviderCooldown("chatgpt-web", new Date("2026-09-13T00:10:00.000Z"));
+  registry.markProviderCooldown("codex-router", futureCooldown());
+  registry.markProviderCooldown("chatgpt-web", futureCooldown());
 
   const router = new ModelRouterConversationProvider(registry, {
     fallback: {
