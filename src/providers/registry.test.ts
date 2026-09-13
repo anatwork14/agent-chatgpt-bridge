@@ -114,8 +114,12 @@ test("model router delegates to exactly one concrete provider", async () => {
   const result = await router.runTurn(request("codex-router/deepseek/v4"), { emit: () => undefined });
   expect(result.text).toBe("deepseek");
   expect(result.providerMetadata).toEqual({
-    routedProvider: "codex-router",
     concrete: "codex-router",
+    routedProvider: "codex-router",
+    routedModel: "codex-router/deepseek/v4",
+    requestedProvider: "codex-router",
+    requestedModel: "codex-router/deepseek/v4",
+    fallback: false,
   });
 });
 
