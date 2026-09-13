@@ -14,6 +14,7 @@ import { SessionManager } from "../core/session-manager";
 import { RunController } from "../core/run-controller";
 import { BridgeError } from "../core/errors";
 import type { ConversationProvider } from "../providers/provider";
+import type { ProviderHealthTrackerOptions } from "../providers/health";
 import type { ProviderRoutingPolicy } from "../providers/policy";
 import { ChatGPTWebConversationProvider } from "../providers/chatgpt-web/provider";
 import {
@@ -63,6 +64,8 @@ export interface BridgeRuntimeDependencies {
    * Pass false to disable environment discovery.
    */
   codexRouter?: CodexRouterProviderOptions | false;
+  /** Explicit health policy. Omitted means rate limits are observed but no cooldown timer is invented. */
+  providerHealthPolicy?: ProviderHealthTrackerOptions;
   /** Explicit opt-in routing policy. Omitted means no provider/model fallback. */
   routingPolicy?: ProviderRoutingPolicy;
   port?: number;
@@ -149,7 +152,7 @@ export async function createBridgeRuntime(
 
   const provider = dependencies.provider
     ?? new ChatGPTWebConversationProvider(providerConfig(config));
-  const registry = new ProviderRegistry([provider]);
+  const registry = new ProviderRegistry([provider], dependencies.providerHealthPolicy);
 
   if (codexRouterOptions) {
     registry.register(new CodexRouterConversationProvider(codexRouterOptions));
