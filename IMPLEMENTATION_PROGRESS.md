@@ -35,6 +35,7 @@ Last updated: 2026-09-13
 - Pinned real codex-router process integration added to CI.
 - Native launcher packaging and packaged-app smoke green on macOS, Ubuntu, and Windows.
 - Live bridge-level codex-router verifier added for real routed continuity, transcript persistence, model pinning, capability leak detection, optional cancellation, and optional ChatGPT Web coexistence.
+- Live-verifier capability-path detection hardened so a public `/v1` API prefix is not mistaken for secret caller-capability material; the full capability URL and nontrivial capability paths remain fail-closed, with subprocess regression coverage.
 - P2 provider-health state machine: `healthy`, `unavailable`, `rate_limited`, `cooldown`, `misconfigured`.
 - Secret-safe health observations for discovery, validation, turns, and explicit policy state.
 - Authenticated read-only `/bridge/v1/providers/health` endpoint.
@@ -47,14 +48,15 @@ Last updated: 2026-09-13
 - Explicit fallback models are validated before route execution; nonexistent or invalid routes fail closed.
 - Structured `BridgeError` codes are preserved in terminal turn persistence.
 - Startup provider/policy validation runs before bridge-owned SQLite is opened.
+- P2 branch ancestry synchronized to the latest validated P1 head through a real two-parent merge commit; no force rewrite or duplicated P1 history.
 
 ## Deterministic validation status
 
 ### P1 — codex-router provider plane
 
-P1 validated head: `74d7826`.
+P1 validated head: `21704a5`.
 
-CI run #149 passed completely on macOS 15, Ubuntu latest, and Windows latest, including:
+CI run #181 passed completely on macOS 15, Ubuntu latest, and Windows latest, including:
 
 ```text
 [x] typecheck
@@ -67,6 +69,7 @@ CI run #149 passed completely on macOS 15, Ubuntu latest, and Windows latest, in
 [x] pinned real codex-router process integration
 [x] CRLF split-boundary SSE regression
 [x] live-verifier deterministic subprocess coverage
+[x] public /v1 capability-path false-positive regression
 ```
 
 The deterministic codex-router coverage includes two complementary paths:
@@ -74,13 +77,13 @@ The deterministic codex-router coverage includes two complementary paths:
 1. a real `agent-chatgpt serve` child process with a deterministic local HTTP/SSE router peer, verifying public bridge surfaces and canonical history ownership;
 2. a pinned real codex-router process with a deterministic fake upstream, verifying the actual router transport boundary without requiring external provider credentials.
 
-Together they verify authenticated bridge startup, combined model discovery, explicit routed session creation, two-turn canonical history, no provider/model migration, Responses streaming translation, split CRLF framing, real codex-router transport, cancellation plumbing, and authenticated process cleanup.
+Together they verify authenticated bridge startup, combined model discovery, explicit routed session creation, two-turn canonical history, no provider/model migration, Responses streaming translation, split CRLF framing, real codex-router transport, cancellation plumbing, authenticated process cleanup, secret capability-path redaction, and safe handling of an ordinary `/v1` router API prefix.
 
 ### P2 — provider health and explicit policy
 
 P2 validated implementation head: `7edb493`.
 
-CI run #178 passed completely on macOS 15, Ubuntu latest, and Windows latest. The dedicated pinned real codex-router process job and actionlint also passed.
+CI run #178 passed completely on macOS 15, Ubuntu latest, and Windows latest. The dedicated pinned real codex-router process job and actionlint also passed. CI #179 then passed on the documentation checkpoint. The stack has since been synchronized to validated P1 head `21704a5` through merge commit `d250548`.
 
 The P2 deterministic checkpoint verifies:
 
@@ -184,6 +187,7 @@ The P2 routing policy is intentionally an injected bridge policy rather than a n
 [x] child-process bridge/router integration test
 [x] pinned real codex-router process integration
 [x] codex-router CRLF split-boundary parser regression fixed
+[x] live verifier public-/v1 false-positive hardening
 [x] P1 deterministic three-OS CI fully green
 [x] P2 provider-health state machine
 [x] P2 authenticated provider-health API
@@ -192,6 +196,7 @@ The P2 routing policy is intentionally an injected bridge policy rather than a n
 [x] P2 auditable route decisions
 [x] P2 no persistent session migration on fallback
 [x] P2 deterministic three-OS CI fully green
+[x] P2 branch includes latest validated P1 ancestry
 [ ] live authenticated persistent-session test
 [ ] live MCP test
 [ ] live autonomous two-round test
