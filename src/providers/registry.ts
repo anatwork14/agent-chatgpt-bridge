@@ -21,7 +21,7 @@ export type ProviderRouteDecisionObserver = (
   request: BridgeTurnRequest,
 ) => void | Promise<void>;
 
-export interface ProviderRegistryOptions extends ProviderHealthTrackerOptions {}
+export type ProviderRegistryOptions = ProviderHealthTrackerOptions;
 
 function assertProviderNotCoolingDown(
   providerName: string,
@@ -279,7 +279,12 @@ export class ModelRouterConversationProvider implements ConversationProvider {
       request.model.model,
       requestedProvider,
       this.registry.providerHealth(),
-      model => this.registry.resolveModel(model),
+      async model => {
+        // Fallback models are explicit policy configuration, so validate them before they can be
+        // selected or audited. The requested model keeps the fast namespace path established in P1.
+        await this.registry.validateModel(model);
+        return this.registry.resolveModel(model);
+      },
       this.policy,
     );
     const provider = decision.fallback
