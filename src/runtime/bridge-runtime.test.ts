@@ -85,6 +85,20 @@ test("codex-router provider accepts a distinct local router port", () => {
   )).not.toThrow();
 });
 
+test("invalid provider health policy fails before bridge persistent state opens", async () => {
+  closeDatabase();
+
+  await expect(createBridgeRuntime(defaultConfig(), {
+    provider: new FakeConversationProvider(),
+    codexRouter: false,
+    providerHealthPolicy: { rateLimitCooldownMs: 0 },
+    apiToken: "invalid-policy-secret",
+    port: 8769,
+  })).rejects.toMatchObject({ code: "invalid_request", retryable: false });
+
+  expect(() => getDatabase()).toThrow("Database not initialized");
+});
+
 test("composed runtime exposes authenticated provider health without failing on an optional degraded provider", async () => {
   closeDatabase();
   initDatabase(":memory:");
