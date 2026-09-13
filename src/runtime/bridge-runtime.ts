@@ -14,6 +14,7 @@ import { SessionManager } from "../core/session-manager";
 import { RunController } from "../core/run-controller";
 import { BridgeError } from "../core/errors";
 import type { ConversationProvider } from "../providers/provider";
+import type { ProviderRoutingPolicy } from "../providers/policy";
 import { ChatGPTWebConversationProvider } from "../providers/chatgpt-web/provider";
 import {
   CodexRouterConversationProvider,
@@ -62,6 +63,8 @@ export interface BridgeRuntimeDependencies {
    * Pass false to disable environment discovery.
    */
   codexRouter?: CodexRouterProviderOptions | false;
+  /** Explicit opt-in routing policy. Omitted means no provider/model fallback. */
+  routingPolicy?: ProviderRoutingPolicy;
   port?: number;
   apiToken?: string;
   requestShutdown?: () => void;
@@ -155,7 +158,20 @@ export async function createBridgeRuntime(
     registry.register(additionalProvider);
   }
 
-  const modelRouter = new ModelRouterConversationProvider(registry);
+  const auditStore = new AuditStore();
+  const modelRouter = new ModelRouterConversationProvider(
+    registry,
+    dependencies.routingPolicy,
+    (decision, request) => {
+      auditStore.log({
+        eventType: "provider.route",
+        sessionId: request.sessionId,
+        turnId: request.requestId,
+        payload: decision,
+        createdAt: new Date().toISOString(),
+      });
+    },
+  );
   const providers = registry.asRecord([modelRouter]);
 
   // The primary provider controls the default model. Additional providers are opt-in by choosing
@@ -178,7 +194,7 @@ export async function createBridgeRuntime(
   const runController = new RunController(
     runStore,
     sessionManager,
-    new AuditStore(),
+    auditStore,
     (id, command) => {
       if (id !== "subprocess-jsonl") {
         throw new BridgeError("agent_adapter_failed", `Unsupported agent adapter: ${id}`, false);
