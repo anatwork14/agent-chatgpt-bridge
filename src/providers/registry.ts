@@ -168,11 +168,6 @@ export class ProviderRegistry {
     return matches[0];
   }
 
-  /**
-   * Discovery is intentionally best-effort by default: an optional degraded provider must not
-   * make unrelated provider catalogs disappear. Use strict=true only for diagnostics/tests that
-   * explicitly require every configured provider to answer.
-   */
   async listModels({ strict = false }: { strict?: boolean } = {}): Promise<string[]> {
     const discovered = await Promise.allSettled(this.values().map(provider => provider.capabilities()));
     if (strict) {
@@ -183,7 +178,6 @@ export class ProviderRegistry {
     return [...new Set(models)];
   }
 
-  /** Validate only the provider that owns a namespaced model. */
   async validateModel(model: string): Promise<void> {
     const owner = this.namespacedOwner(model);
     if (owner) {
@@ -202,7 +196,6 @@ export class ProviderRegistry {
       return;
     }
 
-    // Compatibility path for legacy, non-namespaced model ids.
     const matches: ConversationProvider[] = [];
     for (const provider of this.values()) {
       const capabilities = await provider.capabilities();
@@ -221,13 +214,9 @@ export class ProviderRegistry {
   }
 
   async resolveModel(model: string): Promise<ConversationProvider> {
-    // Public provider namespaces are the fast, deterministic ownership path. This avoids a network
-    // model-catalog request before every turn for downstream providers such as codex-router.
     const namespaced = this.namespacedOwner(model);
     if (namespaced) return namespaced;
 
-    // Compatibility path for existing or injected providers whose public model ids predate the
-    // namespace rule. Ambiguous ownership remains a hard failure instead of a first-match fallback.
     const capabilityMatches: ConversationProvider[] = [];
     for (const provider of this.values()) {
       const capabilities = await provider.capabilities();
@@ -249,6 +238,7 @@ export class ProviderRegistry {
 
 export class ModelRouterConversationProvider implements ConversationProvider {
   public readonly name = MODEL_ROUTER_PROVIDER_NAME;
+  private readonly activeTurns = new Map<string, { turnId: string; provider: ConversationProvider }>();
 
   constructor(
     private readonly registry: ProviderRegistry,
@@ -258,8 +248,6 @@ export class ModelRouterConversationProvider implements ConversationProvider {
 
   async capabilities(): Promise<ProviderCapabilities> {
     return {
-      // These capabilities are model-specific. The meta-provider stays conservative and delegates
-      // exact capability enforcement to the selected concrete provider.
       supportsImages: false,
       supportsTools: false,
       models: await this.registry.listModels(),
@@ -280,8 +268,6 @@ export class ModelRouterConversationProvider implements ConversationProvider {
       requestedProvider,
       this.registry.providerHealth(),
       async model => {
-        // Fallback models are explicit policy configuration, so validate them before they can be
-        // selected or audited. The requested model keeps the fast namespace path established in P1.
         await this.registry.validateModel(model);
         return this.registry.resolveModel(model);
       },
@@ -298,29 +284,38 @@ export class ModelRouterConversationProvider implements ConversationProvider {
       );
     }
 
-    // The bridge records its routing decision before provider execution. If an injected observer
-    // cannot persist that decision, fail closed instead of creating an unaudited provider turn.
     await this.onRouteDecision?.(decision, request);
+    this.activeTurns.set(request.sessionId, { turnId: request.requestId, provider });
+    try {
+      const result = await provider.runTurn({
+        ...request,
+        model: {
+          ...request.model,
+          provider: provider.name,
+          model: decision.selectedModel,
+        },
+      }, ctx);
+      return {
+        ...result,
+        providerMetadata: {
+          ...(result.providerMetadata ?? {}),
+          routedProvider: provider.name,
+          routedModel: decision.selectedModel,
+          requestedProvider: decision.requestedProvider,
+          requestedModel: decision.requestedModel,
+          fallback: decision.fallback,
+          ...(decision.reasonState ? { fallbackReasonState: decision.reasonState } : {}),
+        },
+      };
+    } finally {
+      const active = this.activeTurns.get(request.sessionId);
+      if (active?.turnId === request.requestId) this.activeTurns.delete(request.sessionId);
+    }
+  }
 
-    const result = await provider.runTurn({
-      ...request,
-      model: {
-        ...request.model,
-        provider: provider.name,
-        model: decision.selectedModel,
-      },
-    }, ctx);
-    return {
-      ...result,
-      providerMetadata: {
-        ...(result.providerMetadata ?? {}),
-        routedProvider: provider.name,
-        routedModel: decision.selectedModel,
-        requestedProvider: decision.requestedProvider,
-        requestedModel: decision.requestedModel,
-        fallback: decision.fallback,
-        ...(decision.reasonState ? { fallbackReasonState: decision.reasonState } : {}),
-      },
-    };
+  async cancelTurn(sessionId: string, turnId: string): Promise<void> {
+    const active = this.activeTurns.get(sessionId);
+    if (active?.turnId !== turnId) return;
+    await active.provider.cancelTurn?.(sessionId, turnId);
   }
 }

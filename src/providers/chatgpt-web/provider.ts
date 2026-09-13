@@ -10,6 +10,7 @@ import {
   requireChatGptWebModelRoute,
   type ChatGptWebAccountCapabilities,
 } from "../../chatgpt-web-models";
+import { chatGptTurnSessions } from "../../adapters/chatgpt-web/turn-execution";
 import type { CodexProviderConfig, AdapterEvent, CodexUsage } from "../../types";
 
 function bridgeUsage(usage: CodexUsage | undefined): BridgeUsage | undefined {
@@ -227,5 +228,20 @@ export class ChatGPTWebConversationProvider implements ConversationProvider {
     }
 
     return result;
+  }
+
+  /**
+   * Bridge cancellation is terminal for this logical session. The compatibility shim maps the
+   * bridge session/turn ids to the native thread/turn ids carried by the ChatGPT execution, so use
+   * the exact native retirement path and wait for the helper's physical teardown before allowing
+   * SessionManager to accept a same-session replacement.
+   */
+  async cancelTurn(sessionId: string, turnId: string): Promise<void> {
+    const cancellation = chatGptTurnSessions.cancelNativeTurn(
+      sessionId,
+      turnId,
+      new DOMException("ChatGPT Web bridge turn cancelled", "AbortError"),
+    );
+    await cancellation.settlement;
   }
 }

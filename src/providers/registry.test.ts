@@ -47,6 +47,35 @@ class FailingProvider implements ConversationProvider {
   }
 }
 
+class CancelableProvider implements ConversationProvider {
+  public readonly name = "chatgpt-web";
+  public readonly cancellations: string[] = [];
+  public release!: () => void;
+
+  async capabilities(): Promise<ProviderCapabilities> {
+    return { supportsImages: false, supportsTools: false, models: ["chatgpt-web/high"] };
+  }
+
+  async runTurn(
+    request: BridgeTurnRequest,
+    _ctx: { signal?: AbortSignal; emit(event: BridgeEvent): void },
+  ): Promise<BridgeTurnResult> {
+    await new Promise<void>(resolve => { this.release = resolve; });
+    return {
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      turnId: request.requestId,
+      status: "completed",
+      text: "released",
+    };
+  }
+
+  async cancelTurn(sessionId: string, turnId: string): Promise<void> {
+    this.cancellations.push(`${sessionId}:${turnId}`);
+    this.release();
+  }
+}
+
 function request(model: string): BridgeTurnRequest {
   return {
     requestId: "turn_registry",
@@ -68,7 +97,6 @@ test("provider registry lists a deduplicated namespaced catalog", async () => {
     new StubProvider("chatgpt-web", ["chatgpt-web/high", "shared/model"]),
     new StubProvider("codex-router", ["codex-router/deepseek/v4", "shared/model"]),
   ]);
-
   expect(await registry.listModels()).toEqual([
     "chatgpt-web/high",
     "shared/model",
@@ -81,7 +109,6 @@ test("provider discovery isolates degraded optional providers", async () => {
     new StubProvider("chatgpt-web", ["chatgpt-web/high"]),
     new FailingProvider("codex-router", "router offline"),
   ]);
-
   expect(await registry.listModels()).toEqual(["chatgpt-web/high"]);
   await expect(registry.listModels({ strict: true })).rejects.toThrow("router offline");
 });
@@ -91,7 +118,6 @@ test("targeted model validation does not touch an unrelated degraded provider", 
     new StubProvider("chatgpt-web", ["chatgpt-web/high"]),
     new FailingProvider("codex-router", "router offline"),
   ]);
-
   await expect(registry.validateModel("chatgpt-web/high")).resolves.toBeUndefined();
 });
 
@@ -100,7 +126,6 @@ test("targeted model validation surfaces failure from the selected provider", as
     new StubProvider("chatgpt-web", ["chatgpt-web/high"]),
     new FailingProvider("codex-router", "router offline"),
   ]);
-
   await expect(registry.validateModel("codex-router/deepseek/v4")).rejects.toThrow("router offline");
 });
 
@@ -121,6 +146,19 @@ test("model router delegates to exactly one concrete provider", async () => {
     requestedModel: "codex-router/deepseek/v4",
     fallback: false,
   });
+});
+
+test("model router delegates cancellation to the concrete active provider", async () => {
+  const provider = new CancelableProvider();
+  const router = new ModelRouterConversationProvider(new ProviderRegistry([provider]));
+  const pending = router.runTurn(request("chatgpt-web/high"), { emit: () => undefined });
+  for (let attempt = 0; attempt < 20 && !provider.release; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
+
+  await router.cancelTurn("ses_registry", "turn_registry");
+  await expect(pending).resolves.toMatchObject({ status: "completed" });
+  expect(provider.cancellations).toEqual(["ses_registry:turn_registry"]);
 });
 
 test("model router fails closed when no provider owns a model", async () => {

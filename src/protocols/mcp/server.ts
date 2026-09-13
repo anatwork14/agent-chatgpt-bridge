@@ -239,7 +239,32 @@ export class AgentChatGptMcpServer {
     }
   }
 
-  async run(): Promise<void> {
-    await this.server.connect(new StdioServerTransport());
+  async run(transport: StdioServerTransport = new StdioServerTransport()): Promise<void> {
+    let resolveClosed!: () => void;
+    let closed = false;
+    const waitForClose = new Promise<void>(resolve => { resolveClosed = resolve; });
+    const observeClose = () => {
+      if (closed) return;
+      closed = true;
+      resolveClosed();
+    };
+    const previousTransportClose = transport.onclose;
+    transport.onclose = () => {
+      previousTransportClose?.();
+      observeClose();
+    };
+    // @modelcontextprotocol/sdk@1.30.0's StdioServerTransport does not turn stdin EOF into its
+    // onclose callback. The CLI owns stdin, so observe both terminal stream events explicitly and
+    // let the SDK transport close in the finally block after all in-flight handlers are released.
+    process.stdin.once("end", observeClose);
+    process.stdin.once("close", observeClose);
+    try {
+      await this.server.connect(transport);
+      await waitForClose;
+    } finally {
+      process.stdin.off("end", observeClose);
+      process.stdin.off("close", observeClose);
+      await transport.close();
+    }
   }
 }
