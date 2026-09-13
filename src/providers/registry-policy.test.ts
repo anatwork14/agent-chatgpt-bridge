@@ -142,3 +142,22 @@ test("explicit fallback skips a candidate already observed as degraded", async (
     fallbackReasonState: "cooldown",
   });
 });
+
+test("model-router fails closed before provider execution when route audit cannot persist", async () => {
+  const primary = new RoutedProvider(
+    "codex-router",
+    ["codex-router/deepseek/v4"],
+    "primary",
+  );
+  const registry = new ProviderRegistry([primary]);
+  await registry.listModels();
+  const router = new ModelRouterConversationProvider(
+    registry,
+    undefined,
+    () => { throw new Error("audit store unavailable"); },
+  );
+
+  await expect(router.runTurn(request("codex-router/deepseek/v4"), ctx))
+    .rejects.toThrow("audit store unavailable");
+  expect(primary.turns).toBe(0);
+});
