@@ -6,6 +6,8 @@ import type { ConversationProvider, ProviderCapabilities } from "./provider";
 import { ModelRouterConversationProvider, ProviderRegistry } from "./registry";
 
 class HealthProvider implements ConversationProvider {
+  public turns = 0;
+
   constructor(
     public readonly name: string,
     private readonly models: string[],
@@ -17,6 +19,7 @@ class HealthProvider implements ConversationProvider {
   }
 
   async runTurn(request: BridgeTurnRequest): Promise<BridgeTurnResult> {
+    this.turns += 1;
     return this.nextResult ?? {
       requestId: request.requestId,
       sessionId: request.sessionId,
@@ -132,24 +135,71 @@ test("direct concrete-provider turns are observed too", async () => {
   });
 });
 
-test("explicit cooldown changes only the named provider observation", async () => {
+test("explicit cooldown changes only the named provider and blocks provider operations", async () => {
+  const codexRouter = new HealthProvider("codex-router", ["codex-router/deepseek/v4"]);
   const registry = new ProviderRegistry([
     new HealthProvider("chatgpt-web", ["chatgpt-web/high"]),
-    new HealthProvider("codex-router", ["codex-router/deepseek/v4"]),
+    codexRouter,
   ]);
   await registry.listModels();
 
-  registry.markProviderCooldown("codex-router", new Date("2026-09-13T00:01:00.000Z"));
+  const cooldownUntil = new Date(Date.now() + 60_000);
+  registry.markProviderCooldown("codex-router", cooldownUntil);
   expect(registry.providerHealth().find(value => value.provider === "chatgpt-web")?.state).toBe("healthy");
   expect(registry.providerHealth().find(value => value.provider === "codex-router")).toMatchObject({
     state: "cooldown",
     operation: "policy",
     code: "provider_rate_limited",
-    cooldownUntil: "2026-09-13T00:01:00.000Z",
+    cooldownUntil: cooldownUntil.toISOString(),
   });
+
+  await expect(registry.get("codex-router")!.runTurn(
+    request("codex-router/deepseek/v4"),
+    ctx,
+  )).rejects.toMatchObject({ code: "provider_rate_limited", retryable: true });
+  expect(codexRouter.turns).toBe(0);
 
   expect(() => registry.markProviderCooldown(
     "missing-provider",
-    new Date("2026-09-13T00:01:00.000Z"),
+    new Date(Date.now() + 60_000),
   )).toThrow("not registered");
+});
+
+test("configured rate-limit cooldown blocks the next concrete-provider call without extending itself", async () => {
+  const rateLimited: BridgeTurnResult = {
+    requestId: "turn_health_registry",
+    sessionId: "ses_health_registry",
+    turnId: "turn_health_registry",
+    status: "failed",
+    text: "",
+    error: {
+      code: "provider_rate_limited",
+      message: "downstream limit",
+      retryable: true,
+    },
+  };
+  const codexRouter = new HealthProvider(
+    "codex-router",
+    ["codex-router/deepseek/v4"],
+    rateLimited,
+  );
+  const registry = new ProviderRegistry([codexRouter], { rateLimitCooldownMs: 60_000 });
+  const provider = registry.get("codex-router")!;
+
+  const first = await provider.runTurn(request("codex-router/deepseek/v4"), ctx);
+  expect(first.error?.code).toBe("provider_rate_limited");
+  const cooldown = registry.providerHealth()[0]!;
+  expect(cooldown).toMatchObject({
+    provider: "codex-router",
+    state: "cooldown",
+    operation: "policy",
+    code: "provider_rate_limited",
+  });
+  expect(cooldown.cooldownUntil).toBeDefined();
+  expect(codexRouter.turns).toBe(1);
+
+  await expect(provider.runTurn(request("codex-router/deepseek/v4"), ctx))
+    .rejects.toMatchObject({ code: "provider_rate_limited", retryable: true });
+  expect(codexRouter.turns).toBe(1);
+  expect(registry.providerHealth()[0]?.cooldownUntil).toBe(cooldown.cooldownUntil);
 });
