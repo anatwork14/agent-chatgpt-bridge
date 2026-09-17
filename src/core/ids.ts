@@ -24,3 +24,7 @@ export function generateParticipantId(): string {
 export function generateCollaborationTurnId(): string {
   return generateId("cturn");
 }
+
+export function generateCollaborationMessageId(): string {
+  return generateId("cmsg");
+}

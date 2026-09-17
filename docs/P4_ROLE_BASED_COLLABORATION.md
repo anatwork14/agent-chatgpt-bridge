@@ -360,12 +360,14 @@ Communication in P4 is strictly **hub-and-spoke through the RunController**. Dir
 ## 7. Canonical Transcript & History Invariants
 
 ### 7.1 Canonical Persistence
-All collaboration messages are stored in SQLite (`bridge.db`) in the `messages` and `collaboration_turns` tables.
+All collaboration messages are stored in SQLite (`bridge.db`) in the dedicated `collaboration_messages` table (strictly segregated from ChatGPT session messages in `messages`).
 
 Every persisted message in a collaboration run satisfies the following invariants:
-- **Immutable Provenance:** Every message records `sender_participant_id`, `sender_role_id`, `turn_id`, `created_at`, and `content_hash`.
-- **No External Mutation:** External agents have **zero access** to modify, overwrite, delete, or re-order entries in the bridge transcript.
-- **Content Policy Verification:** Before any participant output is appended to the canonical transcript or relayed to subsequent participants, it is evaluated by `src/core/content-policy.ts` (size bounds, Unicode normalization, secret scrubbing).
+- **Immutable Provenance:** Every message records `sender_participant_id`, `sender_role_id`, `turn_id`, `created_at`, `sequence_index`, and `content_hash`.
+- **Deterministic Ordering:** Canonical transcript ordering uses `sequence_index ASC`, guaranteeing consistency across concurrent reads and independent of timestamp precision.
+- **SHA-256 Integrity:** Every message contains a cryptographic SHA-256 hash over `(runId, turnId, participantId, roleId, decisionType, normalizedContent)`. Tampering with stored content fails closed upon read (`collaboration_transcript_integrity_failed`).
+- **No External Mutation:** External agents have **zero access** to modify, overwrite, delete, or re-order entries in the bridge transcript. The store is append-only.
+- **Content Policy Verification:** Before any participant output is appended to the canonical transcript or relayed to subsequent participants, it is evaluated for maximum byte limits (`MAX_COLLABORATION_MESSAGE_BYTES`), Unicode NFC normalization, and CRLF line ending normalization.
 
 ### 7.2 Transcript Transformation for Participant Turns
 When preparing the `AgentTurnInput` for a participant's turn:
@@ -517,34 +519,45 @@ Every lifecycle transition emits a structured audit record stored in the SQLite 
 ## 13. Persistence & Resumption
 
 ### 13.1 SQLite Schema Evolution (Migration v2)
-To persist multi-participant runs and granular turn history, database migration version 2 introduces three tables:
+To persist multi-participant runs, granular turn history, and canonical messages without modifying legacy P1–P3 single-agent `runs` and `messages`, database migration version 2 introduces four dedicated tables:
 
 ```sql
 -- Migration 2: Multi-Participant Role-Based Collaboration Schema
 
-CREATE TABLE IF NOT EXISTS role_definitions (
+CREATE TABLE role_based_runs (
   id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  description TEXT NOT NULL,
-  system_instructions TEXT NOT NULL,
-  output_contract_json TEXT
+  session_id TEXT NOT NULL,
+  objective TEXT NOT NULL,
+  status TEXT NOT NULL,
+  round INTEGER NOT NULL DEFAULT 0,
+  budget_json TEXT NOT NULL,
+  policy_json TEXT NOT NULL,
+  active_participant_id TEXT,
+  final_summary TEXT,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  completed_at TEXT,
+  FOREIGN KEY(session_id) REFERENCES sessions(id)
 );
 
-CREATE TABLE IF NOT EXISTS participants (
+CREATE TABLE collaboration_participants (
   id TEXT PRIMARY KEY,
   run_id TEXT NOT NULL,
   role_id TEXT NOT NULL,
-  adapter_type TEXT NOT NULL,
-  config_json TEXT,
+  adapter_id TEXT NOT NULL,
+  role_snapshot_json TEXT NOT NULL,
+  config_snapshot_json TEXT NOT NULL,
   status TEXT NOT NULL,
   turns_executed INTEGER NOT NULL DEFAULT 0,
   consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  sequence_index INTEGER NOT NULL,
   created_at TEXT NOT NULL,
   last_active_at TEXT,
-  FOREIGN KEY(run_id) REFERENCES runs(id)
+  FOREIGN KEY(run_id) REFERENCES role_based_runs(id) ON DELETE CASCADE,
+  UNIQUE(run_id, sequence_index)
 );
 
-CREATE TABLE IF NOT EXISTS collaboration_turns (
+CREATE TABLE collaboration_turns (
   id TEXT PRIMARY KEY,
   run_id TEXT NOT NULL,
   round INTEGER NOT NULL,
@@ -558,15 +571,43 @@ CREATE TABLE IF NOT EXISTS collaboration_turns (
   started_at TEXT NOT NULL,
   completed_at TEXT,
   duration_ms INTEGER,
-  FOREIGN KEY(run_id) REFERENCES runs(id),
-  FOREIGN KEY(participant_id) REFERENCES participants(id)
+  FOREIGN KEY(run_id) REFERENCES role_based_runs(id) ON DELETE CASCADE,
+  FOREIGN KEY(participant_id) REFERENCES collaboration_participants(id),
+  UNIQUE(run_id, turn_index)
 );
 
-CREATE INDEX IF NOT EXISTS idx_participants_run ON participants(run_id);
-CREATE INDEX IF NOT EXISTS idx_turns_run ON collaboration_turns(run_id);
+CREATE TABLE collaboration_messages (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  sequence_index INTEGER NOT NULL,
+  sender_participant_id TEXT NOT NULL,
+  sender_role_id TEXT NOT NULL,
+  decision_type TEXT NOT NULL,
+  content_text TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(run_id) REFERENCES role_based_runs(id) ON DELETE CASCADE,
+  FOREIGN KEY(turn_id) REFERENCES collaboration_turns(id) ON DELETE CASCADE,
+  FOREIGN KEY(sender_participant_id) REFERENCES collaboration_participants(id),
+  UNIQUE(run_id, sequence_index)
+);
+
+CREATE INDEX idx_role_based_runs_session ON role_based_runs(session_id);
+CREATE INDEX idx_role_based_runs_status ON role_based_runs(status);
+CREATE INDEX idx_collaboration_participants_run ON collaboration_participants(run_id);
+CREATE INDEX idx_collaboration_participants_role ON collaboration_participants(run_id, role_id);
+CREATE INDEX idx_collaboration_turns_run ON collaboration_turns(run_id, turn_index);
+CREATE INDEX idx_collaboration_turns_participant ON collaboration_turns(participant_id, turn_index);
+CREATE INDEX idx_collaboration_messages_run ON collaboration_messages(run_id, sequence_index);
+CREATE INDEX idx_collaboration_messages_turn ON collaboration_messages(turn_id);
 ```
 
-### 13.2 Safe Resumption Protocol
+### 13.2 Role and Configuration Snapshots
+- **Per-Participant Role Snapshots:** System instructions and role definitions are persisted per-participant in `role_snapshot_json`, ensuring historical runs are immune to daemon-level role definition changes.
+- **Sanitized Config Snapshots:** `config_snapshot_json` defensively strips any credentials, tokens, or passwords, retaining only execution parameters (`adapterType`, `command`, `cwd`, profile, permissionMode).
+
+### 13.3 Safe Resumption Protocol
 If the bridge daemon restarts or crashes while a run is in status `running`:
 1. Upon startup, `RunController.recoverRuns()` queries runs where `status = 'running'`.
 2. Because child processes do not survive daemon restarts, active turns are settled as `failed` (code: `daemon_restarted`).
@@ -812,9 +853,10 @@ The P4 implementation suite will enforce the following deterministic test cases:
 - [x] deterministic orchestration tests
 
 ### P4.4 — Canonical Transcript Integration
-- [ ] SQLite migration v2 (`participants`, `collaboration_turns`)
-- [ ] Canonical provenance logging with role IDs
-- [ ] Transcript query and projection tests
+- [x] SQLite migration v2 (`role_based_runs`, `collaboration_participants`, `collaboration_turns`, `collaboration_messages`)
+- [x] Canonical provenance logging with role IDs and SHA-256 integrity verification
+- [x] Transcript query and projection tests
+- [x] Fail-closed persistence and crash durability tests
 
 ### P4.5 — Cancellation & Failure Propagation
 - [ ] Participant-level cancellation propagation

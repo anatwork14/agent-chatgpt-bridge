@@ -11,6 +11,7 @@ import { AuditStore } from "../persistence/audit-store";
 import { closeDatabase, initDatabase } from "../persistence/database";
 import { MessageStore } from "../persistence/message-store";
 import { RunStore } from "../persistence/run-store";
+import { SqliteCollaborationPersistence } from "../persistence/sqlite-collaboration-persistence";
 import { SessionStore } from "../persistence/session-store";
 import { TurnStore } from "../persistence/turn-store";
 import { SessionManager } from "../core/session-manager";
@@ -200,6 +201,7 @@ export async function createBridgeRuntime(
   const recoveredInterruptedTurns = sessionManager.recoverInterruptedTurns();
 
   const runStore = new RunStore();
+  const collaborationPersistence = new SqliteCollaborationPersistence();
   const runController = new RunController(
     runStore,
     sessionManager,
@@ -256,6 +258,7 @@ export async function createBridgeRuntime(
       }
       throw new BridgeError("agent_adapter_failed", `Unsupported agent adapter: ${id}`, false);
     },
+    collaborationPersistence,
   );
 
   const apiToken = dependencies.apiToken ?? bridgeApiToken(config);

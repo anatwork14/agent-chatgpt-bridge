@@ -741,4 +741,157 @@ describe("P4.3 Role-Based RunController Orchestration", () => {
     expect(capturedInput?.collaboration?.systemInstructions).toContain("architectural invariants");
     expect(capturedInput?.collaboration?.sequenceIndex).toBe(0);
   });
+
+  it("persistence failure stops orchestration and never invokes subsequent participants", async () => {
+    let architectExecuted = false;
+    let implementerExecuted = false;
+
+    const architectAdapter = new TrackedMockAdapter({
+      id: "architect",
+      onNext: () => {
+        architectExecuted = true;
+        return { type: "message", content: "Architecture plan" };
+      },
+    });
+
+    const implementerAdapter = new TrackedMockAdapter({
+      id: "implementer",
+      onNext: () => {
+        implementerExecuted = true;
+        return { type: "done", summary: "Implemented" };
+      },
+    });
+
+    const config: CollaborationConfig = {
+      objective: "Persistence failure test",
+      policy: {
+        roleSequence: ["architect", "implementer"],
+        loopMode: "once",
+        terminalRoles: ["implementer"],
+      },
+      roles: {
+        architect: { adapterType: "acp:claude" },
+        implementer: { adapterType: "subprocess-jsonl" },
+      },
+    };
+
+    const prepared = buildPrepared(config, registry, {
+      architect: architectAdapter,
+      implementer: implementerAdapter,
+    });
+
+    // Failing persistence mock that throws on turn recording
+    const failingPersistence = {
+      createInitialRun: () => {},
+      recordTurnTransaction: () => {
+        throw new Error("Disk I/O error during turn commit");
+      },
+      finalizeRun: () => {},
+      getRun: () => null,
+      listRunsBySession: () => [],
+      getTranscript: () => [],
+    };
+
+    const controller = new RunController(
+      new FakeRunStore() as any,
+      new FakeSessionManager() as any,
+      new FakeAuditStore() as any,
+      () => { throw new Error("not called"); },
+      failingPersistence as any,
+    );
+
+    const result = await controller.executeRoleBasedRun("ses_test", config, prepared);
+
+    expect(architectExecuted).toBe(true);
+    // Implementer MUST NOT have been invoked because architect output failed to become canonical!
+    expect(implementerExecuted).toBe(false);
+    expect(result.run.status).toBe("failed");
+    expect(result.run.finalSummary).toContain("Disk I/O error during turn commit");
+  });
+
+  it("real SQLite persistence round-trip through executeRoleBasedRun stores canonical transcript", async () => {
+    const { initDatabase, closeDatabase } = await import("../persistence/database");
+    const { SqliteCollaborationPersistence } = await import("../persistence/sqlite-collaboration-persistence");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const fs = await import("node:fs");
+
+    const runDbPath = path.join(os.tmpdir(), `test-rc-sqlite-${Date.now()}.db`);
+    closeDatabase();
+    const db = initDatabase(runDbPath);
+    db.exec(`
+      INSERT INTO sessions (id, provider, model, status, created_at, updated_at)
+      VALUES ('ses_sqlite_run', 'chatgpt-web', 'gpt-4', 'active', '2026-09-17T00:00:00Z', '2026-09-17T00:00:00Z');
+    `);
+
+    try {
+      const architectAdapter = new TrackedMockAdapter({
+        id: "architect",
+        onNext: () => ({ type: "message", content: "Architectural specification for persistence" }),
+      });
+      const implementerAdapter = new TrackedMockAdapter({
+        id: "implementer",
+        onNext: () => ({ type: "message", content: "Code implementation patch" }),
+      });
+      const reviewerAdapter = new TrackedMockAdapter({
+        id: "reviewer",
+        onNext: () => ({ type: "done", summary: "APPROVED: Code and architecture verified" }),
+      });
+
+      const config: CollaborationConfig = {
+        objective: "End to end SQLite persistence run",
+        policy: {
+          roleSequence: ["architect", "implementer", "reviewer"],
+          loopMode: "once",
+          terminalRoles: ["reviewer"],
+        },
+        roles: {
+          architect: { adapterType: "acp:claude" },
+          implementer: { adapterType: "subprocess-jsonl" },
+          reviewer: { adapterType: "acp:claude" },
+        },
+      };
+
+      const prepared = buildPrepared(config, registry, {
+        architect: architectAdapter,
+        implementer: implementerAdapter,
+        reviewer: reviewerAdapter,
+      });
+
+      const persistence = new SqliteCollaborationPersistence();
+      const controller = new RunController(
+        new FakeRunStore() as any,
+        new FakeSessionManager() as any,
+        new FakeAuditStore() as any,
+        () => { throw new Error("not called"); },
+        persistence,
+      );
+
+      const result = await controller.executeRoleBasedRun("ses_sqlite_run", config, prepared);
+
+      expect(result.run.status).toBe("completed");
+      expect(result.run.finalSummary).toBe("APPROVED: Code and architecture verified");
+
+      // Verify data directly in SQLite persistence
+      const persistedRun = persistence.getRun(result.run.id);
+      expect(persistedRun).not.toBeNull();
+      expect(persistedRun!.status).toBe("completed");
+      expect(persistedRun!.finalSummary).toBe("APPROVED: Code and architecture verified");
+      expect(persistedRun!.turnHistory.length).toBe(3);
+
+      const transcript = persistence.getTranscript(result.run.id);
+      expect(transcript.length).toBe(3);
+      expect(transcript[0]!.senderRoleId).toBe("architect");
+      expect(transcript[0]!.content).toBe("Architectural specification for persistence");
+      expect(transcript[1]!.senderRoleId).toBe("implementer");
+      expect(transcript[1]!.content).toBe("Code implementation patch");
+      expect(transcript[2]!.senderRoleId).toBe("reviewer");
+      expect(transcript[2]!.content).toBe("APPROVED: Code and architecture verified");
+    } finally {
+      closeDatabase();
+      for (const p of [runDbPath, runDbPath + "-wal", runDbPath + "-shm"]) {
+        if (fs.existsSync(p)) fs.unlinkSync(p);
+      }
+    }
+  });
 });

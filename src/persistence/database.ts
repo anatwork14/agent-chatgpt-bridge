@@ -158,4 +158,127 @@ function runMigrations(database: Database): void {
       database.exec("INSERT INTO schema_migrations (version) VALUES (1)");
     })();
   }
+
+  if (currentVersion < 2) {
+    database.transaction(() => {
+      database.exec(`
+        CREATE TABLE role_based_runs (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          objective TEXT NOT NULL,
+          status TEXT NOT NULL,
+          round INTEGER NOT NULL DEFAULT 0,
+          budget_json TEXT NOT NULL,
+          policy_json TEXT NOT NULL,
+          active_participant_id TEXT,
+          final_summary TEXT,
+          created_at TEXT NOT NULL,
+          started_at TEXT,
+          completed_at TEXT,
+          FOREIGN KEY(session_id) REFERENCES sessions(id)
+        );
+      `);
+
+      database.exec(`
+        CREATE INDEX idx_role_based_runs_session
+        ON role_based_runs(session_id);
+      `);
+
+      database.exec(`
+        CREATE INDEX idx_role_based_runs_status
+        ON role_based_runs(status);
+      `);
+
+      database.exec(`
+        CREATE TABLE collaboration_participants (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          role_id TEXT NOT NULL,
+          adapter_id TEXT NOT NULL,
+          role_snapshot_json TEXT NOT NULL,
+          config_snapshot_json TEXT NOT NULL,
+          status TEXT NOT NULL,
+          turns_executed INTEGER NOT NULL DEFAULT 0,
+          consecutive_failures INTEGER NOT NULL DEFAULT 0,
+          sequence_index INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          last_active_at TEXT,
+          FOREIGN KEY(run_id) REFERENCES role_based_runs(id) ON DELETE CASCADE,
+          UNIQUE(run_id, sequence_index)
+        );
+      `);
+
+      database.exec(`
+        CREATE INDEX idx_collaboration_participants_run
+        ON collaboration_participants(run_id);
+      `);
+
+      database.exec(`
+        CREATE INDEX idx_collaboration_participants_role
+        ON collaboration_participants(run_id, role_id);
+      `);
+
+      database.exec(`
+        CREATE TABLE collaboration_turns (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          round INTEGER NOT NULL,
+          turn_index INTEGER NOT NULL,
+          participant_id TEXT NOT NULL,
+          role_id TEXT NOT NULL,
+          status TEXT NOT NULL,
+          input_summary TEXT NOT NULL,
+          decision_json TEXT,
+          error_json TEXT,
+          started_at TEXT NOT NULL,
+          completed_at TEXT,
+          duration_ms INTEGER,
+          FOREIGN KEY(run_id) REFERENCES role_based_runs(id) ON DELETE CASCADE,
+          FOREIGN KEY(participant_id) REFERENCES collaboration_participants(id),
+          UNIQUE(run_id, turn_index)
+        );
+      `);
+
+      database.exec(`
+        CREATE INDEX idx_collaboration_turns_run
+        ON collaboration_turns(run_id, turn_index);
+      `);
+
+      database.exec(`
+        CREATE INDEX idx_collaboration_turns_participant
+        ON collaboration_turns(participant_id, turn_index);
+      `);
+
+      database.exec(`
+        CREATE TABLE collaboration_messages (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          sequence_index INTEGER NOT NULL,
+          sender_participant_id TEXT NOT NULL,
+          sender_role_id TEXT NOT NULL,
+          decision_type TEXT NOT NULL,
+          content_text TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY(run_id) REFERENCES role_based_runs(id) ON DELETE CASCADE,
+          FOREIGN KEY(turn_id) REFERENCES collaboration_turns(id) ON DELETE CASCADE,
+          FOREIGN KEY(sender_participant_id) REFERENCES collaboration_participants(id),
+          UNIQUE(run_id, sequence_index)
+        );
+      `);
+
+      database.exec(`
+        CREATE INDEX idx_collaboration_messages_run
+        ON collaboration_messages(run_id, sequence_index);
+      `);
+
+      database.exec(`
+        CREATE INDEX idx_collaboration_messages_turn
+        ON collaboration_messages(turn_id);
+      `);
+
+      database.exec("INSERT INTO schema_migrations (version) VALUES (2);");
+    })();
+  }
 }

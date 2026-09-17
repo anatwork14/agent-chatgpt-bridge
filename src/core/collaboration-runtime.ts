@@ -38,6 +38,8 @@ export interface RoleBasedExecutionResult {
   readonly turns: readonly CollaborationTurnRecord[];
 }
 
+import type { RoleBasedRunPersistence } from "./collaboration-persistence";
+
 /**
  * Configurable runtime options for executing a role-based run.
  */
@@ -47,4 +49,6 @@ export interface RoleBasedExecutionOptions {
   readonly now?: () => number;
   readonly turnIdFactory?: () => string;
   readonly runIdFactory?: () => string;
+  readonly messageIdFactory?: () => string;
+  readonly persistence?: RoleBasedRunPersistence;
 }

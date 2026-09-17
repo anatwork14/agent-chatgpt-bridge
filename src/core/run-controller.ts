@@ -7,7 +7,7 @@ import type {
   ExternalAgentAdapterConfig,
   PriorCollaborationTurn,
 } from "./domain";
-import { generateId, generateRunId, generateCollaborationTurnId } from "./ids";
+import { generateId, generateRunId, generateCollaborationTurnId, generateCollaborationMessageId } from "./ids";
 import type { RunStore } from "../persistence/run-store";
 import type { AuditStore } from "../persistence/audit-store";
 import type { SessionManager } from "./session-manager";
@@ -27,6 +27,14 @@ import type {
   RoleBasedExecutionResult,
   RoleBasedExecutionOptions,
 } from "./collaboration-runtime";
+import type { RoleBasedRunPersistence } from "./collaboration-persistence";
+import { InMemoryRoleBasedRunPersistence } from "./collaboration-persistence";
+import {
+  type CollaborationMessageRecord,
+  computeCollaborationMessageHash,
+  assertMessageWithinSizeBound,
+  normalizeCanonicalText,
+} from "./collaboration-transcript";
 
 const HARD_MAX_ROUNDS = 100;
 const DEFAULT_BUDGET: CollaborationRun["budget"] = {
@@ -74,6 +82,7 @@ export class RunController {
       command?: string[],
       config?: ExternalAgentAdapterConfig,
     ) => ExternalAgentAdapter,
+    private readonly rolePersistence?: RoleBasedRunPersistence,
   ) {}
 
   async startRun(
@@ -502,6 +511,10 @@ export class RunController {
     const nowFn = options?.now ?? (() => Date.now());
     const turnIdFactory = options?.turnIdFactory ?? generateCollaborationTurnId;
     const runIdFactory = options?.runIdFactory ?? generateRunId;
+    const messageIdFactory = options?.messageIdFactory ?? generateCollaborationMessageId;
+    const persistence =
+      options?.persistence ?? this.rolePersistence ?? new InMemoryRoleBasedRunPersistence();
+
     const runId = runIdFactory();
     const nowIso = clock();
     const startTimestamp = nowFn();
@@ -525,10 +538,28 @@ export class RunController {
     const participantsById: Record<string, ParticipantRecord> = { ...prepared.records.participantsById };
     const participantIds = [...prepared.records.participantIds];
 
+    // Atomically persist initial run and participants before any external adapter initialize or turn execution
+    const initialRun: RoleBasedCollaborationRun = {
+      id: runId,
+      sessionId,
+      objective: config.objective,
+      status: "running",
+      round: 0,
+      budget,
+      policy: config.policy,
+      participantIds,
+      participantsById,
+      turnHistory: [],
+      createdAt: nowIso,
+      startedAt: nowIso,
+    };
+    persistence.createInitialRun(initialRun, prepared.plans);
+
     const initializedParticipants = new Set<string>();
     const priorTurns: PriorCollaborationTurn[] = [];
     const turnHistory: string[] = [];
     const turns: CollaborationTurnRecord[] = [];
+    let messageSequenceIndex = 0;
     let runStatus: RoleBasedCollaborationRunStatus = "running";
     let finalSummary: string | undefined = undefined;
     let round = 0;
@@ -588,7 +619,7 @@ export class RunController {
             } catch (initErr) {
               const turnId = turnIdFactory();
               const turnTime = clock();
-              turns.push({
+              const failedTurn: CollaborationTurnRecord = {
                 id: turnId,
                 runId,
                 round,
@@ -605,18 +636,35 @@ export class RunController {
                 startedAt: turnTime,
                 completedAt: turnTime,
                 durationMs: 0,
-              });
+              };
+              turns.push(failedTurn);
               turnHistory.push(turnId);
 
-              participantsById[runtime.participantId] = {
+              const failedPart: ParticipantRecord = {
                 ...participantsById[runtime.participantId]!,
                 status: "failed",
                 consecutiveFailures: (participantsById[runtime.participantId]?.consecutiveFailures ?? 0) + 1,
                 lastActiveAt: turnTime,
               };
+              participantsById[runtime.participantId] = failedPart;
 
               runStatus = "failed";
               finalSummary = initErr instanceof Error ? initErr.message : String(initErr);
+
+              try {
+                persistence.recordTurnTransaction({
+                  turn: failedTurn,
+                  participant: failedPart,
+                  runUpdates: {
+                    id: runId,
+                    status: "failed",
+                    finalSummary,
+                    completedAt: turnTime,
+                  },
+                });
+              } catch {
+                // Best effort
+              }
               break loop;
             }
           }
@@ -666,7 +714,8 @@ export class RunController {
               nowFn() - startTimestamp >= budget.maxWallClockMs;
 
             const turnStatus = isAborted ? "cancelled" : "failed";
-            turns.push({
+            const turnCompletedAt = clock();
+            const failedTurn: CollaborationTurnRecord = {
               id: turnId,
               runId,
               round,
@@ -681,17 +730,19 @@ export class RunController {
                 retryable: retryableError(turnErr),
               },
               startedAt: turnStartedAt,
-              completedAt: clock(),
+              completedAt: turnCompletedAt,
               durationMs,
-            });
+            };
+            turns.push(failedTurn);
             turnHistory.push(turnId);
 
-            participantsById[runtime.participantId] = {
+            const failedPart: ParticipantRecord = {
               ...participantsById[runtime.participantId]!,
               status: "failed",
               consecutiveFailures: (participantsById[runtime.participantId]?.consecutiveFailures ?? 0) + 1,
-              lastActiveAt: clock(),
+              lastActiveAt: turnCompletedAt,
             };
+            participantsById[runtime.participantId] = failedPart;
 
             if (isAborted) {
               runStatus = "cancelled";
@@ -703,36 +754,138 @@ export class RunController {
               runStatus = "failed";
               finalSummary = turnErr instanceof Error ? turnErr.message : String(turnErr);
             }
+
+            try {
+              persistence.recordTurnTransaction({
+                turn: failedTurn,
+                participant: failedPart,
+                runUpdates: {
+                  id: runId,
+                  status: runStatus,
+                  finalSummary,
+                  completedAt: turnCompletedAt,
+                },
+              });
+            } catch {
+              // Best effort
+            }
             break loop;
           }
 
           // Successful turn execution
           const durationMs = nowFn() - turnStartMs;
-          turnIndex += 1;
+          const turnCompletedAt = clock();
 
-          turns.push({
+          let rawContent: string | undefined = undefined;
+          if (decision.type === "message") {
+            rawContent = decision.content;
+          } else if (decision.type === "done") {
+            rawContent = decision.summary;
+          } else if (decision.type === "pause") {
+            rawContent = decision.reason;
+          } else if (decision.type === "error") {
+            rawContent = decision.message;
+          }
+
+          let messageRecord: CollaborationMessageRecord | undefined = undefined;
+          if (rawContent !== undefined) {
+            const normalized = normalizeCanonicalText(rawContent);
+            assertMessageWithinSizeBound(normalized);
+            const contentHash = computeCollaborationMessageHash({
+              runId,
+              turnId,
+              participantId: runtime.participantId,
+              roleId: runtime.roleId,
+              decisionType: decision.type,
+              content: normalized,
+            });
+            messageRecord = {
+              id: messageIdFactory(),
+              runId,
+              turnId,
+              sequenceIndex: messageSequenceIndex,
+              senderParticipantId: runtime.participantId,
+              senderRoleId: runtime.roleId,
+              decisionType: decision.type,
+              content: normalized,
+              contentHash,
+              createdAt: turnCompletedAt,
+            };
+          }
+
+          const isTerminalRole =
+            decision.type === "done" && config.policy.terminalRoles.includes(runtime.roleId);
+          let nextRunStatus: RoleBasedCollaborationRunStatus = runStatus;
+          let nextFinalSummary: string | undefined = finalSummary;
+          let nextCompletedAt: string | undefined = undefined;
+
+          if (decision.type === "done" && isTerminalRole) {
+            nextRunStatus = "completed";
+            nextFinalSummary = decision.summary;
+            nextCompletedAt = turnCompletedAt;
+          } else if (decision.type === "pause") {
+            nextRunStatus = "paused";
+            nextFinalSummary = decision.reason;
+            nextCompletedAt = turnCompletedAt;
+          } else if (decision.type === "error") {
+            nextRunStatus = "failed";
+            nextFinalSummary = decision.message;
+            nextCompletedAt = turnCompletedAt;
+          }
+
+          const turnRecord: CollaborationTurnRecord = {
             id: turnId,
             runId,
             round,
-            turnIndex: turnIndex - 1,
+            turnIndex,
             participantId: runtime.participantId,
             roleId: runtime.roleId,
             status: "completed",
             inputSummary: `Turn for role ${runtime.roleId}`,
             decision,
             startedAt: turnStartedAt,
-            completedAt: clock(),
+            completedAt: turnCompletedAt,
             durationMs,
-          });
-          turnHistory.push(turnId);
+          };
 
-          participantsById[runtime.participantId] = {
+          const participantUpdate: ParticipantRecord = {
             ...participantsById[runtime.participantId]!,
             status: "idle",
             turnsExecuted: (participantsById[runtime.participantId]?.turnsExecuted ?? 0) + 1,
             consecutiveFailures: 0,
-            lastActiveAt: clock(),
+            lastActiveAt: turnCompletedAt,
           };
+
+          try {
+            persistence.recordTurnTransaction({
+              turn: turnRecord,
+              message: messageRecord,
+              participant: participantUpdate,
+              runUpdates: {
+                id: runId,
+                status: nextRunStatus,
+                round,
+                activeParticipantId: undefined,
+                finalSummary: nextFinalSummary,
+                completedAt: nextCompletedAt,
+              },
+            });
+          } catch (persistErr) {
+            // Prompt Section 54: Persistence failure must stop orchestration immediately!
+            // Do NOT relay uncommitted turn to the next participant!
+            runStatus = "failed";
+            finalSummary = persistErr instanceof Error ? persistErr.message : String(persistErr);
+            break loop;
+          }
+
+          // Persistence succeeded: commit in-memory tracking
+          if (messageRecord) {
+            messageSequenceIndex += 1;
+          }
+          turnIndex += 1;
+          turns.push(turnRecord);
+          turnHistory.push(turnId);
+          participantsById[runtime.participantId] = participantUpdate;
 
           // Decision processing
           if (decision.type === "message") {
@@ -740,15 +893,14 @@ export class RunController {
               participantId: runtime.participantId,
               roleId: runtime.roleId,
               decisionType: "message",
-              text: decision.content,
+              text: messageRecord!.content,
             });
           } else if (decision.type === "done") {
-            const isTerminalRole = config.policy.terminalRoles.includes(runtime.roleId);
             priorTurns.push({
               participantId: runtime.participantId,
               roleId: runtime.roleId,
               decisionType: "done",
-              text: decision.summary,
+              text: messageRecord!.content,
             });
             if (isTerminalRole) {
               runStatus = "completed";
@@ -805,6 +957,17 @@ export class RunController {
     }
 
     const completedAt = clock();
+    try {
+      persistence.finalizeRun(runId, {
+        status: runStatus,
+        round,
+        finalSummary,
+        completedAt,
+      });
+    } catch {
+      // Best effort finalization
+    }
+
     const roleBasedRun: RoleBasedCollaborationRun = {
       id: runId,
       sessionId,

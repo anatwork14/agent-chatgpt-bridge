@@ -168,7 +168,7 @@ export type AgentDecision =
 export interface PriorCollaborationTurn {
   readonly participantId: string;
   readonly roleId: string;
-  readonly decisionType: "message" | "done";
+  readonly decisionType: "message" | "done" | "pause" | "error";
   readonly text: string;
 }
 
