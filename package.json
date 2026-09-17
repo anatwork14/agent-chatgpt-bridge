@@ -1,15 +1,15 @@
 {
-  "name": "codex-chatgpt-web",
+  "name": "agent-chatgpt-bridge",
   "version": "5.0.6",
   "private": true,
-  "description": "A focused local Responses bridge that runs Codex tasks through a user-authenticated ChatGPT web session.",
+  "description": "Local provider-agnostic AI collaboration runtime with persistent sessions, routing, bounded workflows, ChatGPT Web, codex-router, and ACP agent adapters.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/miuuyy/codex-chatgpt-web.git"
+    "url": "git+https://github.com/anatwork14/agent-chatgpt-bridge.git"
   },
-  "homepage": "https://github.com/miuuyy/codex-chatgpt-web#readme",
+  "homepage": "https://github.com/anatwork14/agent-chatgpt-bridge#readme",
   "bugs": {
-    "url": "https://github.com/miuuyy/codex-chatgpt-web/issues"
+    "url": "https://github.com/anatwork14/agent-chatgpt-bridge/issues"
   },
   "packageManager": "bun@1.4.0",
   "type": "module",
@@ -40,6 +40,7 @@
     "smoke:codex": "bun run scripts/smoke-codex-catalog.ts",
     "smoke:codex-router": "bun run scripts/smoke-codex-router.ts",
     "smoke:codex-router:bridge": "bun run scripts/smoke-live-bridge-codex-router.ts",
+    "smoke:acp:live": "bun run scripts/smoke-acp-live.ts",
     "smoke:cancel": "bun run scripts/smoke-codex-cancel.ts",
     "smoke:interrupt": "bun run scripts/smoke-codex-interrupt.ts",
     "smoke:subagents": "bun run scripts/smoke-codex-subagents.ts --v1 && bun run scripts/smoke-codex-subagents.ts --v2",
@@ -84,11 +85,13 @@
     "zod-to-json-schema": "3.25.1"
   },
   "keywords": [
-    "codex",
+    "agents",
     "chatgpt",
-    "responses-api",
+    "codex",
+    "acp",
     "mcp",
-    "playwright"
+    "responses-api",
+    "multi-agent"
   ],
   "license": "MIT"
 }
