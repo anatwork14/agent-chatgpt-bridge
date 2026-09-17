@@ -395,6 +395,7 @@ export function bindParticipant(
     roleId: plan.roleId,
     adapterId: plan.adapterId,
     adapter,
+    recreateAdapter: () => factory(plan.config),
   });
 }
 

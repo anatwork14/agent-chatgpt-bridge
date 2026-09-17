@@ -65,6 +65,17 @@ export class SqliteCollaborationPersistence implements RoleBasedRunPersistence {
     })();
   }
 
+  updateParticipantAndRunTransaction(params: {
+    readonly participant: ParticipantRecord;
+    readonly runUpdates: Partial<RoleBasedCollaborationRun> & { readonly id: string };
+  }): void {
+    const db = getDatabase();
+    db.transaction(() => {
+      this.participantStore.update(params.participant.id, params.participant);
+      this.runStore.update(params.runUpdates.id, params.runUpdates);
+    })();
+  }
+
   finalizeRun(id: string, updates: Partial<RoleBasedCollaborationRun>): void {
     this.runStore.update(id, updates);
   }

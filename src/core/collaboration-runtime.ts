@@ -19,6 +19,20 @@ export interface ParticipantRuntime {
   readonly adapterId: string;
   readonly adapter: ExternalAgentAdapter;
   readonly abortController?: AbortController;
+  readonly recreateAdapter?: () => ExternalAgentAdapter;
+}
+
+/**
+ * In-memory active role run control structure for P4 cancellation and tracking.
+ * Strictly runtime-only; NEVER serialized or persisted.
+ */
+export interface ActiveRoleRunControl {
+  readonly runId: string;
+  readonly rootAbortController: AbortController;
+  readonly persistence: RoleBasedRunPersistence;
+  activeParticipantId?: string;
+  activeTurnController?: AbortController;
+  readonly cancelledParticipantIds: Set<string>;
 }
 
 /**

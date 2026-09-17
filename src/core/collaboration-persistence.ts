@@ -80,6 +80,11 @@ export interface RoleBasedRunPersistence {
     readonly runUpdates: Partial<RoleBasedCollaborationRun> & { readonly id: string };
   }): void;
 
+  updateParticipantAndRunTransaction(params: {
+    readonly participant: ParticipantRecord;
+    readonly runUpdates: Partial<RoleBasedCollaborationRun> & { readonly id: string };
+  }): void;
+
   finalizeRun(id: string, updates: Partial<RoleBasedCollaborationRun>): void;
 
   getRun(id: string): RoleBasedCollaborationRun | null;
@@ -205,6 +210,43 @@ export class InMemoryRoleBasedRunPersistence implements RoleBasedRunPersistence 
       ...params.runUpdates,
       participantsById: updatedParticipantsById,
       turnHistory: updatedTurnHistory,
+    });
+  }
+
+  updateParticipantAndRunTransaction(params: {
+    readonly participant: ParticipantRecord;
+    readonly runUpdates: Partial<RoleBasedCollaborationRun> & { readonly id: string };
+  }): void {
+    const run = this.runs.get(params.runUpdates.id);
+    if (!run) {
+      throw new BridgeError("not_found", `Role-based run '${params.runUpdates.id}' not found`, false);
+    }
+    const partMap = this.participantsByRun.get(run.id);
+    if (!partMap) {
+      throw new BridgeError("not_found", `Participants for run '${run.id}' not found`, false);
+    }
+    const existingPart = partMap.get(params.participant.id);
+    if (!existingPart) {
+      throw new BridgeError("not_found", `Participant '${params.participant.id}' not found`, false);
+    }
+
+    partMap.set(params.participant.id, {
+      ...existingPart,
+      status: params.participant.status,
+      turnsExecuted: params.participant.turnsExecuted,
+      consecutiveFailures: params.participant.consecutiveFailures,
+      lastActiveAt: params.participant.lastActiveAt,
+    });
+
+    const updatedParticipantsById: Record<string, ParticipantRecord> = {
+      ...run.participantsById,
+      [params.participant.id]: { ...params.participant },
+    };
+
+    this.runs.set(run.id, {
+      ...run,
+      ...params.runUpdates,
+      participantsById: updatedParticipantsById,
     });
   }
 

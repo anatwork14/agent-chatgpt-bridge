@@ -433,9 +433,21 @@ Update SQLite Run & Participant Status to 'cancelled'
 
 ### 9.2 Addressable Participant Cancellation
 P4 supports granular participant-level cancellation:
-- **Endpoint:** `POST /runs/{id}/participants/{participantId}/cancel`
-- If a specific participant (e.g. a long-running `researcher`) exceeds expected latency, the supervisor can cancel that participant's turn without aborting the entire collaboration run.
-- The `RunController` halts the participant's process, marks its turn status as `cancelled`, and invokes the policy failure handler (e.g. retry with another participant or proceed to next role).
+- **API:** `cancelRoleParticipant(runId, participantId)`
+- Validates run ownership (rejects attempts to cancel foreign participants from another run).
+- If the participant is actively executing a turn, aborts the active turn controller without aborting uncancelled peers.
+- If the participant is idle or pending, marks the participant cancelled and fails the run (fail-closed requirement for sequential workflow dependencies).
+- Strictly does not touch `SessionManager.cancel()` as role runs coordinate via hub-and-spoke without ChatGPT web turns.
+- Marks participant status as `cancelled` and run status as `failed` (no retries).
+
+### 9.3 Same-Participant Bounded Retries & Failure Propagation
+- Retries are governed strictly by `budget.maxRetriesPerParticipant` (counting retries after the initial attempt).
+- Retries strictly reuse the same participant (`participantId`, `roleId`, `adapterId`, and configuration) with ZERO provider fallback or rotation.
+- Every retry attempt consumes 1 turn from `budget.maxTurns` and receives a unique monotonic `turnIndex` and `turnId` in SQLite (`UNIQUE(run_id, turn_index)` constraint).
+- Explicit error decisions (`decision.type === 'error'`) emit canonical messages and retry with the same adapter instance.
+- Thrown operational errors emit no message, close the crashed adapter, recreate a fresh adapter instance via `recreateAdapter()`, and retry.
+- On success, `consecutiveFailures` resets to 0.
+- If `maxTurns` or `maxWallClockMs` is reached during retries, global budget limits take precedence and transition the run to `budget_exhausted` or `timed_out`.
 
 ---
 
@@ -859,9 +871,9 @@ The P4 implementation suite will enforce the following deterministic test cases:
 - [x] Fail-closed persistence and crash durability tests
 
 ### P4.5 — Cancellation & Failure Propagation
-- [ ] Participant-level cancellation propagation
-- [ ] Run-level cancellation teardown
-- [ ] Error escalation and retry budgets
+- [x] Participant-level cancellation propagation
+- [x] Run-level cancellation teardown
+- [x] Error escalation and retry budgets
 
 ### P4.6 — Persistence / Resume
 - [ ] Run recovery on daemon startup

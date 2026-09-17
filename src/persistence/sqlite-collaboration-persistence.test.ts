@@ -390,6 +390,72 @@ test("SqliteCollaborationPersistence: tamper detection triggers integrity failur
   }).toThrow();
 });
 
+test("SqliteCollaborationPersistence: updateParticipantAndRunTransaction updates participant and run atomically", () => {
+  const persistence = new SqliteCollaborationPersistence();
+  const runId = "run_update_trans";
+
+  const plans: ParticipantAssignmentPlan[] = [
+    {
+      roleId: "architect",
+      participantId: "part_arch",
+      sequenceIndex: 0,
+      adapterId: "acp:claude",
+      role: { id: "architect", name: "Architect", description: "", systemInstructions: "" },
+      config: { adapterType: "acp" },
+    },
+  ];
+
+  persistence.createInitialRun(
+    {
+      id: runId,
+      sessionId: "ses_p4_durability",
+      objective: "Test atomic participant/run update",
+      status: "running",
+      round: 0,
+      budget: defaultBudget,
+      policy: defaultPolicy,
+      participantIds: ["part_arch"],
+      participantsById: {
+        part_arch: {
+          id: "part_arch",
+          roleId: "architect",
+          adapterId: "acp:claude",
+          status: "idle",
+          turnsExecuted: 0,
+          consecutiveFailures: 0,
+          createdAt: "2026-09-17T00:00:00Z",
+        },
+      },
+      turnHistory: [],
+      createdAt: "2026-09-17T00:00:00Z",
+    },
+    plans,
+  );
+
+  persistence.updateParticipantAndRunTransaction({
+    participant: {
+      id: "part_arch",
+      roleId: "architect",
+      adapterId: "acp:claude",
+      status: "active",
+      turnsExecuted: 0,
+      consecutiveFailures: 0,
+      createdAt: "2026-09-17T00:00:00Z",
+      lastActiveAt: "2026-09-17T00:00:01Z",
+    },
+    runUpdates: {
+      id: runId,
+      activeParticipantId: "part_arch",
+    },
+  });
+
+  const updatedRun = persistence.getRun(runId);
+  expect(updatedRun).not.toBeNull();
+  expect(updatedRun!.activeParticipantId).toBe("part_arch");
+  expect(updatedRun!.participantsById.part_arch!.status).toBe("active");
+  expect(updatedRun!.participantsById.part_arch!.lastActiveAt).toBe("2026-09-17T00:00:01Z");
+});
+
 test("SqliteCollaborationPersistence: disk restart durability with temporary SQLite file", () => {
   closeDatabase();
   const diskDbPath = path.join(
