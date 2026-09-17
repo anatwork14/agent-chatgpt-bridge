@@ -713,7 +713,7 @@ Each slice represents an independently testable, atomic unit of work:
 
 - **Slice P4.2: Explicit Participant Assignment & Configuration Parser**
   - Implement parser and validator for `RoleAssignment` configuration.
-  - Add factory methods to instantiate and bind `ExternalAgentAdapter` instances to `Participant` structs.
+  - Add factory methods to instantiate and bind `ExternalAgentAdapter` instances into memory-only `ParticipantRuntime` bindings (keeping persisted `ParticipantRecord` structs strictly runtime-free).
   - Unit tests for valid configurations, missing adapters, and invalid command specs.
 
 - **Slice P4.3: Sequential Orchestration Engine in RunController**
@@ -796,9 +796,11 @@ The P4 implementation suite will enforce the following deterministic test cases:
 - [x] Unit tests for role lookup and immutability
 
 ### P4.2 — Explicit Participant Assignment
-- [ ] Configuration loader and parser
-- [ ] Participant factory and adapter binding
-- [ ] Structural assignment tests
+- [x] Configuration normalization
+- [x] Participant planning/records
+- [x] Adapter factory
+- [x] Non-spawning preflight
+- [x] Deterministic tests
 
 ### P4.3 — Sequential Role Workflow
 - [ ] Multi-participant sequential turn loop in `RunController`

@@ -16,3 +16,7 @@ export function generateTurnId(): string {
 export function generateRunId(): string {
   return generateId("run");
 }
+
+export function generateParticipantId(): string {
+  return generateId("part");
+}
