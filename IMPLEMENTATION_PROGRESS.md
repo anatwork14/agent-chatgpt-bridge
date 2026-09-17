@@ -1,181 +1,207 @@
 # Implementation Progress
 
-Last updated: 2026-09-13
+Last updated: 2026-09-17
 
-## Completed
+This file is evidence-based. A milestone is not marked live-complete only because unit tests or CI pass.
+
+## Current release state
+
+```text
+P0 universal bridge/session foundation        DONE
+P1 codex-router provider plane                DONE + LIVE SIGN-OFF
+P2 provider health / explicit routing policy DONE + CI VALIDATED
+P3 native ACP external-agent adapter          IMPLEMENTED + CI GREEN
+P3 real ACP interoperability                  LIVE SIGN-OFF PENDING
+P4 role-based collaboration                   NOT STARTED
+P5 bounded collaboration DAG                  NOT STARTED
+```
+
+The active consolidation branch is `release/p3-hardening`. It connects the previously orphaned feature-stack history to `main` with a two-parent integration commit while preserving the complete P1 -> P2 -> P3 ancestry. The older stacked PRs remain available as implementation history until the consolidation PR is accepted.
+
+## Completed foundation
 
 - Upstream baseline imported and pinned.
-- Generic bridge domain types and provider interface.
+- Generic bridge domain types and `ConversationProvider` abstraction.
 - Real ChatGPT Web provider facade around the upstream adapter.
 - Account-aware model discovery.
-- Persistent session manager and canonical SQLite transcript.
+- Persistent `SessionManager` and canonical SQLite transcript.
 - Terminal turn persistence and interrupted-turn recovery.
 - Session isolation and serialization.
-- Cancellation propagation with terminal ChatGPT Web browser-owner retirement for explicit bridge cancellation.
+- Cancellation propagation and browser-owner retirement for explicit bridge cancellation.
 - Local content/attachment policy.
 - Turn scheduling and bounded concurrency primitives.
 - REST `/bridge/v1` API with SSE and bearer-token protection.
 - Idempotency for supported non-streaming mutations.
-- Agent → ChatGPT MCP tools with correct stdio lifetime ownership.
+- Agent -> ChatGPT MCP tools with stdio lifetime ownership.
 - Strict subprocess JSONL external-agent adapter.
 - Bounded autonomous collaboration controller.
-- Real `agent-chatgpt` CLI/runtime composition using the authenticated upstream provider.
 - Runtime-home SQLite integration.
-- Hono security upgrade to 4.13.7.
-- Cross-platform CI test coverage expanded to bridge tests.
-- PR CI concurrency added so superseded runs cancel automatically.
+- Cross-platform CI verification/package/smoke coverage.
 - Upstream Codex compatibility retained.
-- Optional `codex-router` downstream provider plane through the OpenAI Responses boundary.
-- Namespaced `codex-router/<model-id>` discovery with no silent fallback.
-- Loopback-only codex-router endpoint policy by default plus recursive bridge-route prevention.
-- Codex-router cancellation, explicit rate-limit/error mapping, and capability-URL redaction.
-- Canonical bridge history preserved across multi-turn codex-router sessions.
-- Real child-process bridge integration and pinned real codex-router process integration in CI.
-- Codex-router SSE parser hardened for CRLF frame delimiters split across transport chunks.
-- Native launcher packaging and packaged-app smoke green on macOS, Ubuntu, and Windows.
-- Live bridge verifier for routed continuity, transcript persistence, model pinning, capability leak detection, downstream cancellation, and ChatGPT Web coexistence.
-- Live-verifier path hardening so public `/v1` is not mistaken for secret capability material.
-- P2 provider-health state machine: `healthy`, `unavailable`, `rate_limited`, `cooldown`, `misconfigured`.
-- Secret-safe health observations for discovery, validation, turns, and explicit policy state.
-- Authenticated read-only `/bridge/v1/providers/health` endpoint.
-- Explicit provider routing policy with fallback disabled by default.
-- Ordered fallback only for explicitly configured trigger states; no mid-turn or implicit retry/fallback.
-- Explicit rate-limit cooldown policy with local enforcement and deterministic expiry semantics.
-- Direct-provider and model-router traffic share the same health enforcement boundary.
-- Bridge-owned `provider.route` decisions are persisted before provider execution; audit failure is fail-closed.
-- Fallback turns do not migrate persistent session provider/model identity.
-- Explicit fallback models are validated before route execution.
-- Structured `BridgeError` codes are preserved in terminal turn persistence.
-- Startup provider/policy validation runs before bridge-owned SQLite is opened.
-- Model-router cancellation delegates to the exact selected concrete provider and remains compatible with P2 health/policy wrappers.
-- P2 ancestry synchronized to fully signed-off P1 through a real two-parent merge with no force rewrite or duplicated P1 history.
 
 ## P1 — codex-router provider plane
 
-### Final signed-off head
-
-`c8ee167ab15a5dd537a13d3c714e142acc59ce3f`
-
-Final P1 fixes after the previous deterministic checkpoint:
-
-- `8d092306f366c65eef72bae4bb7a59a8294b4d2f` — keep MCP stdio runtime alive until disconnect.
-- `3b917750f4d7540dcf8ab28d0e559c96591f3d5e` — retire ChatGPT Web bridge turns on explicit cancellation.
-- `c8ee167ab15a5dd537a13d3c714e142acc59ce3f` — route cancellation through model-router to the concrete active provider.
-
-CI run #185 / `34747263537` passed completely:
+Final signed-off head:
 
 ```text
-[x] actionlint
-[x] pinned real codex-router process integration
-[x] macOS 15 verify + package + packaged-app smoke
-[x] Ubuntu verify + package + AppImage ABI + packaged-app smoke
-[x] Windows PowerShell launcher validation + verify + package + packaged-app smoke
+c8ee167ab15a5dd537a13d3c714e142acc59ce3f
 ```
 
-Local verification on the signed-off head reported 1073 passing tests, 2 skipped, 0 failed; focused P1 tests 65 passing; typecheck, audits, builds, and relocatable smoke passed.
+Implemented:
 
-### Live release validation
+- optional downstream `codex-router` provider through the OpenAI Responses boundary;
+- namespaced `codex-router/<model-id>` discovery with no silent fallback;
+- loopback-only endpoint policy by default and recursive bridge-route prevention;
+- cancellation and explicit rate-limit/error propagation;
+- capability-URL redaction;
+- canonical bridge history across multi-turn routed sessions;
+- real child-process integration and pinned real codex-router process coverage;
+- SSE CRLF split-boundary hardening;
+- packaged-app smoke on macOS, Ubuntu, and Windows.
+
+P1 CI run #185 / `34747263537` passed the full matrix.
+
+Live validation completed:
 
 ```text
 [x] production ChatGPT Web authenticated
 [x] independent ChatGPT turn
-[x] persistent-session 8427 marker recovery
+[x] persistent-session marker recovery
 [x] direct real codex-router smoke
-[x] chatgpt-web and codex-router namespaces
-[x] real routed turn
-[x] routed same-session semantic continuity
+[x] ChatGPT Web and codex-router namespaces
+[x] routed turn and same-session semantic continuity
 [x] routed transcript persistence
 [x] provider/model pinning
-[x] capability/secret leak inspection — NONE
+[x] capability/secret leak inspection
 [x] routed downstream cancellation
 [x] ChatGPT/router coexistence
-[x] two-session semantic isolation — no cross-marker contamination
-[x] ChatGPT cancellation cleanup
-[x] same-session post-cancel reuse
-[x] MCP chatgpt_create_session
-[x] MCP chatgpt_ask
-[x] MCP chatgpt_continue
-[x] autonomous relay >= 2 rounds
-[x] autonomous bounded termination
-[x] restart reconstruction/continuity
+[x] two-session isolation
+[x] ChatGPT cancellation cleanup + same-session reuse
+[x] MCP create / ask / continue
+[x] autonomous relay >= 2 rounds + bounded termination
+[x] restart reconstruction / continuity
 ```
 
-A genuine provider-side 429 was intentionally not manufactured because no safe reproduction mechanism was available. Paid-account exhaustion is not an acceptable validation mechanism and this gate remains conditional rather than blocking.
+A genuine provider-side 429 was intentionally not manufactured because paid-account exhaustion is not a safe validation technique.
 
 **P1 LIVE SIGN-OFF: YES**
 
-PR #2 is Ready for review and remains intentionally unmerged until an explicit merge decision.
-
 ## P2 — provider health and explicit routing policy
 
-P2 core implementation checkpoint: `7edb493` — CI #178 fully green.
-
-Prior combined checkpoint: `1024b3301ced497fdddc5fca88e0259ede3d7b19` — CI #183 fully green.
-
-Current synchronized P2 head before this documentation update: `356ded7ba910d857a12476d20c2a371b6ae8096f`.
-
-That head is a two-parent merge of previous P2 and signed-off P1 `c8ee167...`. Compare from P1 reports `behind_by=0` and merge base exactly the signed-off P1 head.
-
-CI run #186 / `34748073113` passed completely on the combined P1+P2 stack:
+Final stacked P2 head before P3:
 
 ```text
-[x] actionlint
-[x] pinned real codex-router process integration
-[x] macOS 15 verify + package + packaged-app smoke
-[x] Ubuntu verify + package + AppImage ABI + packaged-app smoke
-[x] Windows PowerShell launcher validation + verify + package + packaged-app smoke
+77c1de144dfd8509be8aee885903af688591d8a2
 ```
 
-P2 deterministic coverage includes:
+Implemented:
+
+- bridge-level provider health states: `healthy`, `unavailable`, `rate_limited`, `cooldown`, `misconfigured`;
+- secret-safe health observations for discovery, validation, turns, and explicit policy state;
+- authenticated read-only `/bridge/v1/providers/health` endpoint;
+- fallback disabled by default;
+- explicitly ordered fallback with explicit trigger states only;
+- no opportunistic retry/mid-turn migration;
+- optional rate-limit cooldown with deterministic expiry semantics;
+- shared health enforcement for direct-provider and model-router traffic;
+- route decisions persisted before provider execution, with audit failure fail-closed;
+- no persistent session provider/model migration on fallback;
+- explicit fallback-model validation before execution;
+- structured `BridgeError` preservation in terminal turn persistence;
+- startup policy validation before bridge-owned SQLite is opened;
+- concrete-provider cancellation preserved through routing wrappers.
+
+The combined P1+P2 stack passed the full macOS/Linux/Windows CI/package/smoke matrix.
+
+**P2 DETERMINISTIC SIGN-OFF: YES**
+
+## P3 — native ACP external-agent adapter
+
+Current P3 implementation head before release hardening:
 
 ```text
-[x] five bridge-level provider health states
-[x] raw provider diagnostics excluded from health observations
-[x] cancellation/caller errors remain health-neutral
-[x] authenticated provider-health REST surface
-[x] fallback disabled by default
-[x] explicit ordered fallback with explicit trigger states
-[x] no opportunistic mid-turn fallback
-[x] retryable fallback-candidate resolution may continue through explicit order
-[x] non-retryable ambiguity/configuration failures stop immediately
-[x] explicit fallback model validation before execution
-[x] optional explicit rate-limit cooldown
-[x] cooldown blocks concrete-provider calls locally
-[x] cooldown expiry does not manufacture healthy state
-[x] direct concrete-provider sessions obey health/cooldown enforcement
-[x] route decision persisted before provider execution
-[x] audit persistence failure prevents provider execution
-[x] fallback does not mutate persistent session identity
-[x] structured provider error codes preserved in turn persistence
-[x] invalid health policy fails before bridge SQLite opens
-[x] signed-off P1 MCP lifecycle fix inherited
-[x] signed-off P1 ChatGPT cancellation retirement inherited
-[x] model-router cancellation delegation preserved through P2 routing
-[x] full three-OS combined stack CI green
+ec4c7f3ea888ff8a904d98847f8da33b4e1fe959
 ```
 
-P2 has no remaining blocker inherited from P1. PR #3 may move to Ready for review after the documentation checkpoint remains green.
+CI run #191 / `34767691106` completed successfully on that head.
 
-## Sequencing
+Implemented:
 
-Current dependency state:
+- generic ACP v1 adapter using `@agentclientprotocol/sdk` 1.4.0;
+- built-in profiles for Cursor (`agent acp`), Gemini CLI (`gemini --acp`), and Claude ACP (`claude-agent-acp`);
+- custom ACP command profile;
+- persistent owned subprocess and ACP session across collaboration rounds;
+- streaming agent-message collection;
+- cancellation via ACP `session/cancel` plus bounded process cleanup;
+- prompt timeout and protocol-output bounds;
+- default-deny permission handling with optional read-only/delegated policy;
+- filesystem, terminal, and elicitation client callbacks disabled by default;
+- safe environment inheritance rather than wholesale parent-process credential inheritance;
+- structured ACP audit events;
+- deterministic fake ACP coverage for initialize/session/prompt/cancel/permission/close behavior;
+- prompt process-exit detection and orphan cleanup hardening.
+
+Release hardening added on `release/p3-hardening`:
+
+- repository/package metadata corrected to identify Agent Bridge rather than upstream `codex-chatgpt-web`;
+- README/product architecture synchronized through P3;
+- repeatable `bun run smoke:acp:live` verifier;
+- isolated temporary workspace for mutation/permission probes;
+- two-round marker continuity check;
+- in-flight cancellation and post-cancel recovery check;
+- clean-close/audit evidence output;
+- `docs/ACP_LIVE_SMOKE.md` runbook and sign-off record.
+
+### Remaining P3 live gates
+
+Run the live verifier against real authenticated clients:
+
+```bash
+bun run smoke:acp:live -- --profile cursor
+bun run smoke:acp:live -- --profile gemini
+bun run smoke:acp:live -- --profile claude
+```
+
+Required evidence per client:
 
 ```text
-P1 deterministic      DONE
-P1 live sign-off      DONE
-P2 deterministic      DONE
-P2 + signed-off P1    DONE
-P3 ACP adapters       NOT STARTED
-P4/P5 roles + DAG     NOT STARTED
+[ ] initialize and session/new succeed
+[ ] round 1 -> round 2 semantic/marker continuity
+[ ] permission/mutation probe remains fail-closed
+[ ] in-flight cancellation surfaces client_cancelled
+[ ] same-session post-cancel recovery succeeds
+[ ] close leaves no owned orphan process
+[ ] no agent.acp.failed audit event
+[ ] no provider credential material is emitted by the bridge
 ```
 
-Do not merge PR #2 or PR #3 automatically. Merge sequencing requires an explicit decision. Because PR #3 is stacked on PR #2, the clean order is P1 first, then P2. Only after that sequencing is settled should P3 ACP implementation begin from the correct base.
+**P3 DETERMINISTIC SIGN-OFF: YES**
 
-## Known design notes
+**P3 LIVE SIGN-OFF: PENDING REAL CURSOR / GEMINI / CLAUDE RUNS**
 
-The generic `agent-chatgpt serve` composition owns its local bridge listener while preserving the original upstream Codex daemon separately. Both reuse the same upstream browser/provider implementation. A future single-listener composition may be possible, but it is not part of P1/P2.
+## Integration topology
 
-The P2 routing policy is intentionally an injected bridge policy rather than a role-level collaboration-policy DSL. Role routing and richer collaboration policy belong to later milestones.
+The original repository `main` history did not share an ancestor with the feature stack. The release-hardening branch fixes that without force-pushing or rewriting either history:
+
+```text
+main (initial repository history) -----------+
+                                             \
+                                              merge -> release/p3-hardening
+                                             /
+P0 -> P1 -> P2 -> P3 -----------------------+
+```
+
+The integration commit reuses the exact P3 tree as its content and records both `main` and the P3 head as parents. Subsequent hardening commits are normal descendants. This makes a single reviewable PR to `main` possible while preserving implementation provenance.
+
+## Merge/release sequencing
+
+1. Keep the consolidation PR in draft while the hardening CI matrix runs.
+2. Resolve any deterministic regression on `release/p3-hardening`.
+3. Run the three real-client ACP smoke commands and attach evidence.
+4. Mark P3 live-signed-off only when all required gates pass or an explicit documented exception is accepted.
+5. Merge the consolidation PR to `main`.
+6. Close/supersede the old stacked PRs only after the consolidated merge is complete.
+7. Begin P4 from the merged release baseline; do not develop role policy on the old stack branches.
 
 ## Definition-of-done tracking
 
@@ -183,42 +209,31 @@ The P2 routing policy is intentionally an injected bridge policy rather than a r
 [x] generic session creation
 [x] canonical persisted transcript
 [x] multi-session isolation
-[x] REST API
-[x] SSE
+[x] REST + SSE
 [x] cancellation primitives
-[x] terminal same-session ChatGPT cancellation cleanup
 [x] SQLite persistence
 [x] CLI
-[x] MCP
-[x] MCP real stdio lifetime regression
-[x] strict subprocess JSONL
+[x] MCP + real stdio lifetime regression
+[x] strict subprocess JSONL adapter
 [x] bounded autonomous relay
 [x] local bearer-token boundary
 [x] fail-closed provider terminal handling
-[x] Codex compatibility retained in code/tests
-[x] optional codex-router provider plane
-[x] codex-router namespace/discovery
-[x] codex-router two-turn canonical-history integration
-[x] child-process bridge/router integration
-[x] pinned real codex-router process integration
-[x] codex-router CRLF split-boundary regression
-[x] public-/v1 capability-path verifier hardening
-[x] P1 deterministic three-OS CI green
-[x] P1 live authenticated persistent session
-[x] P1 live MCP create/ask/continue
-[x] P1 live autonomous two-round relay
-[x] P1 live codex-router smoke checklist
-[x] P1 live cancellation + same-session reuse
-[x] P1 live restart continuity
+[x] upstream Codex compatibility
+[x] codex-router provider plane and namespace
+[x] real codex-router child-process integration
+[x] P1 deterministic cross-platform CI
 [x] P1 live sign-off
 [x] P2 provider-health state machine
-[x] P2 authenticated provider-health API
-[x] P2 explicit-only fallback policy
-[x] P2 enforced optional cooldown
-[x] P2 auditable route decisions
-[x] P2 no persistent session migration on fallback
-[x] P2 deterministic three-OS CI green
-[x] P2 branch includes signed-off P1 ancestry
-[x] P2 combined P1+P2 CI green
-[ ] P3 ACP agent adapters
+[x] P2 explicit-only fallback/cooldown/auditable routing
+[x] P2 combined cross-platform CI
+[x] P3 ACP adapter implementation
+[x] P3 deterministic ACP tests
+[x] P3 cross-platform CI #191
+[x] P3 live verifier/runbook
+[ ] P3 live Cursor interoperability
+[ ] P3 live Gemini CLI interoperability
+[ ] P3 live Claude ACP interoperability
+[ ] P3 live sign-off
+[ ] P4 role-based collaboration
+[ ] P5 bounded multi-participant DAG
 ```
