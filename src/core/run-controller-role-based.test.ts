@@ -18,6 +18,7 @@ import {
 import { createParticipantAssignmentPlans, createInitialParticipantRecords } from "./participant-assignment";
 import { BridgeError } from "./errors";
 import { InMemoryRoleBasedRunPersistence } from "./collaboration-persistence";
+import { collaborationMessagesToPriorTurns } from "./collaboration-transcript";
 
 class FakeRunStore {
   private readonly runs = new Map<string, any>();
@@ -815,13 +816,18 @@ describe("P4.3 Role-Based RunController Orchestration", () => {
       failingPersistence as any,
     );
 
-    const result = await controller.executeRoleBasedRun("ses_test", config, prepared);
+    try {
+      await controller.executeRoleBasedRun("ses_test", config, prepared);
+      expect.unreachable("executeRoleBasedRun should have rejected on persistence failure");
+    } catch (err) {
+      expect(err).toBeInstanceOf(BridgeError);
+      expect((err as BridgeError).code).toBe("collaboration_persistence_failed");
+      expect((err as BridgeError).message).toContain("Disk I/O error during turn commit");
+    }
 
     expect(architectExecuted).toBe(true);
     // Implementer MUST NOT have been invoked because architect output failed to become canonical!
     expect(implementerExecuted).toBe(false);
-    expect(result.run.status).toBe("failed");
-    expect(result.run.finalSummary).toContain("Disk I/O error during turn commit");
   });
 
   it("real SQLite persistence round-trip through executeRoleBasedRun stores canonical transcript", async () => {
@@ -912,5 +918,384 @@ describe("P4.3 Role-Based RunController Orchestration", () => {
         }
       }
     }
+  });
+
+  describe("P4.5.2 Durable Settlement, Transcript Parity & Invariant Verification", () => {
+    it("terminal run persisted before blocked adapter close (no crash window)", async () => {
+      const sessionManager = new FakeSessionManager();
+      const persistence = new InMemoryRoleBasedRunPersistence();
+      const controller = new RunController(
+        new FakeRunStore() as any,
+        sessionManager as any,
+        new FakeAuditStore() as any,
+        () => { throw new Error("not called"); },
+        persistence,
+      );
+
+      let releaseClose: () => void = () => {};
+      const closePromise = new Promise<void>((resolve) => {
+        releaseClose = resolve;
+      });
+
+      const adapter = new TrackedMockAdapter({
+        id: "architect",
+        onNext: () => ({ type: "done", summary: "Completed task" }),
+        onClose: async () => {
+          await closePromise;
+        },
+      });
+
+      const config: CollaborationConfig = {
+        objective: "Test durable settlement before teardown",
+        roles: { architect: { adapterType: "acp:claude" } },
+        policy: { roleSequence: ["architect"], loopMode: "once", terminalRoles: ["architect"] },
+      };
+
+      const prepared = buildPrepared(config, registry, { architect: adapter });
+      const run = await controller.startRoleBasedRun("ses_test", config, prepared);
+
+      while (adapter.closeCalls === 0) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+
+      // While adapter.close is still pending/blocked:
+      const persistedDuringClose = persistence.getRun(run.id);
+      expect(persistedDuringClose).not.toBeNull();
+      expect(persistedDuringClose!.status).toBe("completed");
+      expect(persistedDuringClose!.finalSummary).toBe("Completed task");
+      expect(persistedDuringClose!.completedAt).toBeDefined();
+      expect(persistedDuringClose!.activeParticipantId).toBeUndefined();
+
+      // Release close
+      releaseClose();
+
+      const result = await controller.waitForRoleBasedRun(run.id);
+      expect(result.run.status).toBe("completed");
+      expect(result.run.finalSummary).toBe("Completed task");
+    });
+
+    it("budget exhaustion persisted before blocked adapter close", async () => {
+      const sessionManager = new FakeSessionManager();
+      const persistence = new InMemoryRoleBasedRunPersistence();
+      const controller = new RunController(
+        new FakeRunStore() as any,
+        sessionManager as any,
+        new FakeAuditStore() as any,
+        () => { throw new Error("not called"); },
+        persistence,
+      );
+
+      let releaseClose: () => void = () => {};
+      const closePromise = new Promise<void>((resolve) => {
+        releaseClose = resolve;
+      });
+
+      const adapter = new TrackedMockAdapter({
+        id: "architect",
+        onNext: () => ({ type: "message", content: "Working..." }),
+        onClose: async () => {
+          await closePromise;
+        },
+      });
+
+      const config: CollaborationConfig = {
+        objective: "Test budget exhaustion before teardown",
+        roles: { architect: { adapterType: "acp:claude" } },
+        policy: { roleSequence: ["architect"], loopMode: "repeat_until_done", terminalRoles: ["architect"] },
+        budget: {
+          maxTurns: 1,
+          maxParticipants: 1,
+          maxParallelTurns: 1,
+          maxRetriesPerParticipant: 0,
+          maxWallClockMs: 60000,
+        },
+      };
+
+      const prepared = buildPrepared(config, registry, { architect: adapter });
+      const run = await controller.startRoleBasedRun("ses_test", config, prepared);
+
+      while (adapter.closeCalls === 0) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+
+      // While adapter.close is still blocked, run must already be durably persisted as budget_exhausted
+      const persistedDuringClose = persistence.getRun(run.id);
+      expect(persistedDuringClose).not.toBeNull();
+      expect(persistedDuringClose!.status).toBe("budget_exhausted");
+      expect(persistedDuringClose!.completedAt).toBeDefined();
+      expect(persistedDuringClose!.activeParticipantId).toBeUndefined();
+
+      releaseClose();
+
+      const result = await controller.waitForRoleBasedRun(run.id);
+      expect(result.run.status).toBe("budget_exhausted");
+    });
+
+    it("explicit error is included in retry priorTurns and later-role priorTurns, strictly matching transcript projection", async () => {
+      const sessionManager = new FakeSessionManager();
+      const persistence = new InMemoryRoleBasedRunPersistence();
+      const controller = new RunController(
+        new FakeRunStore() as any,
+        sessionManager as any,
+        new FakeAuditStore() as any,
+        () => { throw new Error("not called"); },
+        persistence,
+      );
+
+      let architectCalls = 0;
+      let retryPriorTurns: any[] = [];
+      let implementerPriorTurns: any[] = [];
+
+      const architectAdapter = new TrackedMockAdapter({
+        id: "architect",
+        onNext: (input) => {
+          architectCalls++;
+          if (architectCalls === 1) {
+            return { type: "error", message: "Transient rate limit exceeded", retryable: true };
+          }
+          retryPriorTurns = [...(input.collaboration?.priorTurns ?? [])];
+          return { type: "message", content: "Architecture plan V2" };
+        },
+      });
+
+      const implementerAdapter = new TrackedMockAdapter({
+        id: "implementer",
+        onNext: (input) => {
+          implementerPriorTurns = [...(input.collaboration?.priorTurns ?? [])];
+          return { type: "done", summary: "Implemented according to V2" };
+        },
+      });
+
+      const config: CollaborationConfig = {
+        objective: "Test explicit error in priorTurns",
+        roles: {
+          architect: { adapterType: "acp:claude" },
+          implementer: { adapterType: "subprocess-jsonl" },
+        },
+        policy: {
+          roleSequence: ["architect", "implementer"],
+          loopMode: "once",
+          terminalRoles: ["implementer"],
+        },
+        budget: {
+          maxTurns: 10,
+          maxParticipants: 2,
+          maxParallelTurns: 1,
+          maxRetriesPerParticipant: 2,
+          maxWallClockMs: 60000,
+        },
+      };
+
+      const prepared = buildPrepared(config, registry, {
+        architect: architectAdapter,
+        implementer: implementerAdapter,
+      });
+
+      const result = await controller.executeRoleBasedRun("ses_test", config, prepared);
+      expect(result.run.status).toBe("completed");
+
+      // 1. Architect retry sees its own committed error turn
+      expect(retryPriorTurns).toHaveLength(1);
+      expect(retryPriorTurns[0]?.roleId).toBe("architect");
+      expect(retryPriorTurns[0]?.decisionType).toBe("error");
+      expect(retryPriorTurns[0]?.text).toBe("Transient rate limit exceeded");
+
+      // 2. Implementer sees both the error turn and the subsequent successful message turn in order
+      expect(implementerPriorTurns).toHaveLength(2);
+      expect(implementerPriorTurns[0]?.roleId).toBe("architect");
+      expect(implementerPriorTurns[0]?.decisionType).toBe("error");
+      expect(implementerPriorTurns[0]?.text).toBe("Transient rate limit exceeded");
+      expect(implementerPriorTurns[1]?.roleId).toBe("architect");
+      expect(implementerPriorTurns[1]?.decisionType).toBe("message");
+      expect(implementerPriorTurns[1]?.text).toBe("Architecture plan V2");
+
+      // 3. Runtime priorTurns strictly equals projection from canonical transcript
+      const canonicalTranscript = persistence.getTranscript(result.run.id);
+      const expectedPriorTurns = collaborationMessagesToPriorTurns(canonicalTranscript);
+      expect(implementerPriorTurns).toEqual(expectedPriorTurns.slice(0, 2));
+
+      // 4. Cryptographic integrity preserved for all messages
+      expect(canonicalTranscript).toHaveLength(3);
+      expect(canonicalTranscript[0]?.decisionType).toBe("error");
+      expect(canonicalTranscript[1]?.decisionType).toBe("message");
+      expect(canonicalTranscript[2]?.decisionType).toBe("done");
+    });
+
+    it("activeParticipantId is NULL on every settled path (success, pause, cancel, timeout, budget)", async () => {
+      const sessionManager = new FakeSessionManager();
+
+      // 1. Success
+      {
+        const persistence = new InMemoryRoleBasedRunPersistence();
+        const controller = new RunController(
+          new FakeRunStore() as any, sessionManager as any, new FakeAuditStore() as any,
+          () => { throw new Error("not called"); }, persistence,
+        );
+        const adapter = new TrackedMockAdapter({ id: "architect", onNext: () => ({ type: "done", summary: "Done" }) });
+        const config: CollaborationConfig = {
+          objective: "test",
+          roles: { architect: { adapterType: "acp:claude" } },
+          policy: { roleSequence: ["architect"], loopMode: "once", terminalRoles: ["architect"] },
+        };
+        const prep = buildPrepared(config, registry, { architect: adapter });
+        const res = await controller.executeRoleBasedRun("ses_test", config, prep);
+        expect(res.run.activeParticipantId).toBeUndefined();
+        expect(persistence.getRun(res.run.id)?.activeParticipantId).toBeUndefined();
+      }
+
+      // 2. Pause
+      {
+        const persistence = new InMemoryRoleBasedRunPersistence();
+        const controller = new RunController(
+          new FakeRunStore() as any, sessionManager as any, new FakeAuditStore() as any,
+          () => { throw new Error("not called"); }, persistence,
+        );
+        const adapter = new TrackedMockAdapter({ id: "architect", onNext: () => ({ type: "pause", reason: "Wait" }) });
+        const config: CollaborationConfig = {
+          objective: "test",
+          roles: { architect: { adapterType: "acp:claude" } },
+          policy: { roleSequence: ["architect"], loopMode: "once", terminalRoles: ["architect"] },
+        };
+        const prep = buildPrepared(config, registry, { architect: adapter });
+        const res = await controller.executeRoleBasedRun("ses_test", config, prep);
+        expect(res.run.activeParticipantId).toBeUndefined();
+        expect(persistence.getRun(res.run.id)?.activeParticipantId).toBeUndefined();
+      }
+
+      // 3. Whole-run cancel
+      {
+        const persistence = new InMemoryRoleBasedRunPersistence();
+        const controller = new RunController(
+          new FakeRunStore() as any, sessionManager as any, new FakeAuditStore() as any,
+          () => { throw new Error("not called"); }, persistence,
+        );
+        const adapter = new TrackedMockAdapter({
+          id: "architect",
+          onNext: async (_input, ctx) => {
+            await new Promise(r => { ctx.signal?.addEventListener("abort", r); });
+            throw new DOMException("Aborted", "AbortError");
+          },
+        });
+        const config: CollaborationConfig = {
+          objective: "test",
+          roles: { architect: { adapterType: "acp:claude" } },
+          policy: { roleSequence: ["architect"], loopMode: "once", terminalRoles: ["architect"] },
+        };
+        const prep = buildPrepared(config, registry, { architect: adapter });
+        const run = await controller.startRoleBasedRun("ses_test", config, prep);
+        while (adapter.nextCalls === 0) await new Promise(r => setTimeout(r, 10));
+        await controller.cancelRoleBasedRun(run.id, "Cancel");
+        expect(persistence.getRun(run.id)?.activeParticipantId).toBeUndefined();
+      }
+
+      // 4. Participant cancel
+      {
+        const persistence = new InMemoryRoleBasedRunPersistence();
+        const controller = new RunController(
+          new FakeRunStore() as any, sessionManager as any, new FakeAuditStore() as any,
+          () => { throw new Error("not called"); }, persistence,
+        );
+        const adapter = new TrackedMockAdapter({
+          id: "architect",
+          onNext: async (_input, ctx) => {
+            await new Promise(r => { ctx.signal?.addEventListener("abort", r); });
+            throw new DOMException("Aborted", "AbortError");
+          },
+        });
+        const config: CollaborationConfig = {
+          objective: "test",
+          roles: { architect: { adapterType: "acp:claude" } },
+          policy: { roleSequence: ["architect"], loopMode: "once", terminalRoles: ["architect"] },
+        };
+        const prep = buildPrepared(config, registry, { architect: adapter });
+        const run = await controller.startRoleBasedRun("ses_test", config, prep);
+        while (adapter.nextCalls === 0) await new Promise(r => setTimeout(r, 10));
+        await controller.cancelRoleParticipant(run.id, prep.plans[0]!.participantId, "Cancel part");
+        expect(persistence.getRun(run.id)?.activeParticipantId).toBeUndefined();
+      }
+
+      // 5. Budget exhausted
+      {
+        const persistence = new InMemoryRoleBasedRunPersistence();
+        const controller = new RunController(
+          new FakeRunStore() as any, sessionManager as any, new FakeAuditStore() as any,
+          () => { throw new Error("not called"); }, persistence,
+        );
+        const adapter = new TrackedMockAdapter({ id: "architect", onNext: () => ({ type: "message", content: "..." }) });
+        const config: CollaborationConfig = {
+          objective: "test",
+          roles: { architect: { adapterType: "acp:claude" } },
+          policy: { roleSequence: ["architect"], loopMode: "repeat_until_done", terminalRoles: ["architect"] },
+          budget: { maxTurns: 1, maxParticipants: 1, maxParallelTurns: 1, maxRetriesPerParticipant: 0, maxWallClockMs: 60000 },
+        };
+        const prep = buildPrepared(config, registry, { architect: adapter });
+        const res = await controller.executeRoleBasedRun("ses_test", config, prep);
+        expect(res.run.activeParticipantId).toBeUndefined();
+        expect(persistence.getRun(res.run.id)?.activeParticipantId).toBeUndefined();
+      }
+
+      // 6. Timeout (deterministic fake clock — avoids real-timer flakiness)
+      {
+        let simulatedTime = 1000;
+        const persistence = new InMemoryRoleBasedRunPersistence();
+        const controller = new RunController(
+          new FakeRunStore() as any, sessionManager as any, new FakeAuditStore() as any,
+          () => { throw new Error("not called"); }, persistence,
+        );
+        const adapter = new TrackedMockAdapter({
+          id: "architect",
+          onNext: () => {
+            simulatedTime += 5000; // advance past maxWallClockMs=3000
+            return { type: "message", content: "..." };
+          },
+        });
+        const config: CollaborationConfig = {
+          objective: "test",
+          roles: { architect: { adapterType: "acp:claude" } },
+          policy: { roleSequence: ["architect"], loopMode: "repeat_until_done", terminalRoles: ["architect"] },
+          budget: { maxTurns: 10, maxParticipants: 1, maxParallelTurns: 1, maxRetriesPerParticipant: 0, maxWallClockMs: 3000 },
+        };
+        const prep = buildPrepared(config, registry, { architect: adapter });
+        const res = await controller.executeRoleBasedRun("ses_test", config, prep, { now: () => simulatedTime });
+        expect(res.run.status).toBe("timed_out");
+        expect(res.run.activeParticipantId).toBeUndefined();
+        expect(persistence.getRun(res.run.id)?.activeParticipantId).toBeUndefined();
+      }
+    });
+
+    it("waitForRoleBasedRun returns result strictly equal to canonical persistence without unbounded cache", async () => {
+      const sessionManager = new FakeSessionManager();
+      const persistence = new InMemoryRoleBasedRunPersistence();
+      const controller = new RunController(
+        new FakeRunStore() as any,
+        sessionManager as any,
+        new FakeAuditStore() as any,
+        () => { throw new Error("not called"); },
+        persistence,
+      );
+
+      const adapter = new TrackedMockAdapter({
+        id: "architect",
+        onNext: () => ({ type: "done", summary: "All done" }),
+      });
+
+      const config: CollaborationConfig = {
+        objective: "Test result consistency",
+        roles: { architect: { adapterType: "acp:claude" } },
+        policy: { roleSequence: ["architect"], loopMode: "once", terminalRoles: ["architect"] },
+      };
+
+      const prepared = buildPrepared(config, registry, { architect: adapter });
+      const run = await controller.startRoleBasedRun("ses_test", config, prepared);
+
+      const result = await controller.waitForRoleBasedRun(run.id);
+      const persistedRun = persistence.getRun(run.id);
+      const persistedTurns = persistence.getTurns(run.id);
+
+      expect(result.run).toEqual(persistedRun!);
+      expect(result.turns).toEqual(persistedTurns);
+      expect(result.run.status).toBe("completed");
+      expect(result.run.status).not.toBe("running");
+    });
   });
 });

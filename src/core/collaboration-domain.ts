@@ -3,6 +3,7 @@ import type {
   ExternalAgentAdapterConfig,
   AgentDecision,
 } from "./domain";
+import { BridgeError } from "./errors";
 
 /**
  * Built-in logical collaboration roles.
@@ -225,6 +226,119 @@ export function applyRoleBasedRunPatch(
           ? patch.completedAt
           : run.completedAt,
   };
+}
+
+/**
+ * Asserts that a RoleBasedRunPatch is legally applicable to the given run.
+ * For terminal runs (completed, failed, cancelled, budget_exhausted, timed_out),
+ * all lifecycle fields (status, round, activeParticipantId, finalSummary, completedAt)
+ * are immutable. Only idempotent writes containing the exact existing values are allowed.
+ */
+export function assertRoleBasedRunPatchAllowed(
+  existingRun: RoleBasedCollaborationRun,
+  patch: RoleBasedRunPatch,
+): void {
+  if (isRoleBasedRunTerminalStatus(existingRun.status)) {
+    const patched = applyRoleBasedRunPatch(existingRun, patch);
+    if (
+      patched.status !== existingRun.status ||
+      patched.round !== existingRun.round ||
+      patched.activeParticipantId !== existingRun.activeParticipantId ||
+      patched.finalSummary !== existingRun.finalSummary ||
+      patched.completedAt !== existingRun.completedAt
+    ) {
+      throw new BridgeError(
+        "invalid_state_transition",
+        `Cannot modify terminal role-based run '${existingRun.id}' (status: '${existingRun.status}')`,
+        false,
+      );
+    }
+  }
+}
+
+/**
+ * Maximum permitted size in bytes for an external cancellation reason (8 KiB).
+ */
+export const MAX_CANCELLATION_REASON_BYTES = 8 * 1024;
+
+/**
+ * Normalizes and validates a cancellation reason string:
+ * - CRLF is replaced with LF
+ * - Unicode NFC normalization
+ * - Strict length bounding (<= 8 KiB)
+ */
+export function normalizeCancellationReason(rawReason?: string): string {
+  if (!rawReason) {
+    return "Collaboration run was cancelled";
+  }
+  const normalized = rawReason.replace(/\r\n/g, "\n").normalize("NFC");
+  const byteLength = Buffer.byteLength(normalized, "utf8");
+  if (byteLength > MAX_CANCELLATION_REASON_BYTES) {
+    throw new BridgeError(
+      "invalid_request",
+      `Cancellation reason exceeds maximum size bound of ${MAX_CANCELLATION_REASON_BYTES} bytes (${byteLength} bytes provided)`,
+      false,
+    );
+  }
+  return normalized;
+}
+
+/**
+ * Structured internal runtime abort reasons.
+ */
+export type RoleRunAbortReason =
+  | {
+      readonly kind: "run_cancelled";
+      readonly reason: string;
+    }
+  | {
+      readonly kind: "participant_cancelled";
+      readonly participantId: string;
+      readonly reason: string;
+    };
+
+/**
+ * Typed abort error carrying a structured RoleRunAbortReason.
+ */
+export class RoleRunAbortError extends Error {
+  public readonly abortReason: RoleRunAbortReason;
+
+  constructor(abortReason: RoleRunAbortReason) {
+    super(
+      abortReason.kind === "run_cancelled"
+        ? abortReason.reason
+        : `Required participant '${abortReason.participantId}' was cancelled: ${abortReason.reason}`,
+    );
+    this.name = "AbortError";
+    this.abortReason = abortReason;
+  }
+}
+
+export function createRoleRunAbortError(abortReason: RoleRunAbortReason): RoleRunAbortError {
+  return new RoleRunAbortError(abortReason);
+}
+
+export function readRoleRunAbortReason(reason: unknown): RoleRunAbortReason | null {
+  if (reason instanceof RoleRunAbortError) {
+    return reason.abortReason;
+  }
+  if (
+    reason &&
+    typeof reason === "object" &&
+    "abortReason" in reason &&
+    typeof (reason as any).abortReason === "object"
+  ) {
+    return (reason as any).abortReason;
+  }
+  if (
+    reason &&
+    typeof reason === "object" &&
+    "kind" in reason &&
+    ((reason as any).kind === "run_cancelled" || (reason as any).kind === "participant_cancelled")
+  ) {
+    return reason as RoleRunAbortReason;
+  }
+  return null;
 }
 
 /**

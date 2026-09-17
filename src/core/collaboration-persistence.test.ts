@@ -9,6 +9,7 @@ import {
   type CollaborationTurnRecord,
   type ParticipantRecord,
   isRoleBasedRunTerminalStatus,
+  ROLE_BASED_TERMINAL_STATUSES,
 } from "./collaboration-domain";
 import { BridgeError } from "./errors";
 
@@ -227,4 +228,129 @@ describe("P4.5.1 Collaboration Persistence & Patch Semantics", () => {
     expect(turns[1]?.id).toBe("turn_2");
     expect(turns[1]?.turnIndex).toBe(1);
   });
+
+  describe("P4.5.2 Terminal Immutability Matrix & Nonterminal Transitions", () => {
+    for (const termStatus of ROLE_BASED_TERMINAL_STATUSES) {
+      it(`enforces terminal immutability for '${termStatus}': all lifecycle field modifications fail, idempotent patch succeeds`, () => {
+        const persistence = new InMemoryRoleBasedRunPersistence();
+        const runId = `run_${termStatus}_matrix`;
+        const initial = {
+          ...baseRun,
+          id: runId,
+          status: "running" as const,
+          round: 1,
+          finalSummary: "Initial run summary",
+          completedAt: undefined,
+          activeParticipantId: "part_1",
+        };
+        persistence.createInitialRun(initial, []);
+
+        const settledCompletedAt = "2026-09-17T01:00:00Z";
+        const settledSummary = `Settled as ${termStatus}`;
+
+        // Move to terminal status
+        persistence.finalizeRun(runId, {
+          status: termStatus,
+          round: 2,
+          activeParticipantId: null,
+          finalSummary: settledSummary,
+          completedAt: settledCompletedAt,
+        });
+
+        const terminal = persistence.getRun(runId);
+        expect(terminal?.status).toBe(termStatus);
+        expect(terminal?.round).toBe(2);
+        expect(terminal?.finalSummary).toBe(settledSummary);
+        expect(terminal?.completedAt).toBe(settledCompletedAt);
+        expect(terminal?.activeParticipantId).toBeUndefined();
+
+        // 1. Modifying status fails
+        expect(() => {
+          persistence.finalizeRun(runId, { status: "running" });
+        }).toThrow(BridgeError);
+        expect(() => {
+          persistence.finalizeRun(runId, { status: termStatus === "completed" ? "failed" : "completed" });
+        }).toThrow(BridgeError);
+
+        // 2. Modifying round fails
+        expect(() => {
+          persistence.finalizeRun(runId, { round: 99 });
+        }).toThrow(BridgeError);
+
+        // 3. Modifying activeParticipantId fails
+        expect(() => {
+          persistence.finalizeRun(runId, { activeParticipantId: "part_2" });
+        }).toThrow(BridgeError);
+
+        // 4. Modifying finalSummary fails
+        expect(() => {
+          persistence.finalizeRun(runId, { finalSummary: "Tampered summary" });
+        }).toThrow(BridgeError);
+
+        // 5. Modifying completedAt fails
+        expect(() => {
+          persistence.finalizeRun(runId, { completedAt: "2026-09-17T02:00:00Z" });
+        }).toThrow(BridgeError);
+
+        // Idempotent exact-value patch succeeds
+        persistence.finalizeRun(runId, {
+          status: termStatus,
+          round: 2,
+          activeParticipantId: null,
+          finalSummary: settledSummary,
+          completedAt: settledCompletedAt,
+        });
+
+        const reloaded = persistence.getRun(runId);
+        expect(reloaded?.status).toBe(termStatus);
+        expect(reloaded?.round).toBe(2);
+        expect(reloaded?.finalSummary).toBe(settledSummary);
+        expect(reloaded?.completedAt).toBe(settledCompletedAt);
+        expect(reloaded?.activeParticipantId).toBeUndefined();
+      });
+    }
+
+    it("paused remains nonterminal: paused -> running is permitted, completedAt & activeParticipantId are null", () => {
+      const persistence = new InMemoryRoleBasedRunPersistence();
+      const runId = "run_paused_resume_test";
+      const initial = {
+        ...baseRun,
+        id: runId,
+        status: "running" as const,
+        round: 0,
+        activeParticipantId: "part_1",
+      };
+      persistence.createInitialRun(initial, []);
+
+      // Transition to paused
+      persistence.finalizeRun(runId, {
+        status: "paused",
+        round: 0,
+        activeParticipantId: null,
+        finalSummary: "Paused for human review",
+        completedAt: null,
+      });
+
+      const pausedRun = persistence.getRun(runId);
+      expect(pausedRun?.status).toBe("paused");
+      expect(pausedRun?.completedAt).toBeUndefined();
+      expect(pausedRun?.activeParticipantId).toBeUndefined();
+      expect(isRoleBasedRunTerminalStatus(pausedRun!.status)).toBe(false);
+
+      // Transition paused -> running is permitted
+      persistence.finalizeRun(runId, {
+        status: "running",
+        round: 1,
+        activeParticipantId: "part_2",
+        finalSummary: null,
+      });
+
+      const resumedRun = persistence.getRun(runId);
+      expect(resumedRun?.status).toBe("running");
+      expect(resumedRun?.round).toBe(1);
+      expect(resumedRun?.activeParticipantId).toBe("part_2");
+      expect(resumedRun?.completedAt).toBeUndefined();
+    });
+  });
 });
+

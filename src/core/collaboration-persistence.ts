@@ -11,6 +11,7 @@ import type {
 import {
   applyRoleBasedRunPatch,
   isRoleBasedRunTerminalStatus,
+  assertRoleBasedRunPatchAllowed,
 } from "./collaboration-domain";
 import type { ParticipantAssignmentPlan } from "./participant-assignment";
 import type { CollaborationMessageRecord } from "./collaboration-transcript";
@@ -162,15 +163,7 @@ export class InMemoryRoleBasedRunPersistence implements RoleBasedRunPersistence 
       throw new BridgeError("not_found", `Role-based run '${params.runUpdates.id}' not found`, false);
     }
 
-    if (isRoleBasedRunTerminalStatus(run.status)) {
-      if (params.runUpdates.status !== undefined && params.runUpdates.status !== run.status) {
-        throw new BridgeError(
-          "invalid_state_transition",
-          `Cannot transition role-based run from terminal status '${run.status}' to '${params.runUpdates.status}'`,
-          false,
-        );
-      }
-    }
+    assertRoleBasedRunPatchAllowed(run, params.runUpdates);
 
     const turns = this.turnsByRun.get(run.id) ?? [];
     if (turns.some((t) => t.turnIndex === params.turn.turnIndex)) {
@@ -239,15 +232,7 @@ export class InMemoryRoleBasedRunPersistence implements RoleBasedRunPersistence 
       throw new BridgeError("not_found", `Role-based run '${params.runUpdates.id}' not found`, false);
     }
 
-    if (isRoleBasedRunTerminalStatus(run.status)) {
-      if (params.runUpdates.status !== undefined && params.runUpdates.status !== run.status) {
-        throw new BridgeError(
-          "invalid_state_transition",
-          `Cannot transition role-based run from terminal status '${run.status}' to '${params.runUpdates.status}'`,
-          false,
-        );
-      }
-    }
+    assertRoleBasedRunPatchAllowed(run, params.runUpdates);
 
     const partMap = this.participantsByRun.get(run.id);
     if (!partMap) {
@@ -285,15 +270,7 @@ export class InMemoryRoleBasedRunPersistence implements RoleBasedRunPersistence 
       throw new BridgeError("not_found", `Role-based run '${id}' not found`, false);
     }
 
-    if (isRoleBasedRunTerminalStatus(run.status)) {
-      if (updates.status !== undefined && updates.status !== run.status) {
-        throw new BridgeError(
-          "invalid_state_transition",
-          `Cannot transition role-based run from terminal status '${run.status}' to '${updates.status}'`,
-          false,
-        );
-      }
-    }
+    assertRoleBasedRunPatchAllowed(run, updates);
 
     const patchedRun = applyRoleBasedRunPatch(run, updates);
     this.runs.set(id, patchedRun);

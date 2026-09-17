@@ -4,10 +4,11 @@ import { RoleBasedRunStore } from "./role-based-run-store";
 import { CollaborationParticipantStore } from "./collaboration-participant-store";
 import { CollaborationTurnStore } from "./collaboration-turn-store";
 import { CollaborationMessageStore } from "./collaboration-message-store";
-import type {
-  RoleBasedCollaborationRun,
-  RoleBasedRunBudget,
-  RunPolicy,
+import {
+  type RoleBasedCollaborationRun,
+  type RoleBasedRunBudget,
+  type RunPolicy,
+  ROLE_BASED_TERMINAL_STATUSES,
 } from "../core/collaboration-domain";
 import type { ParticipantAssignmentPlan } from "../core/participant-assignment";
 import {
@@ -542,12 +543,95 @@ test("RoleBasedRunStore.update enforces terminal state immutability in SQLite", 
     runStore.update(runId, { status: "failed" });
   }).toThrow(BridgeError);
 
-  // Updating non-status fields on a terminal run is allowed
-  runStore.update(runId, { finalSummary: "Amended summary" });
-  expect(runStore.get(runId)?.finalSummary).toBe("Amended summary");
+  // Updating lifecycle fields on a terminal run with new values must throw invalid_state_transition
+  expect(() => {
+    runStore.update(runId, { finalSummary: "Amended summary" });
+  }).toThrow(BridgeError);
 
-  // Re-asserting the identical terminal status is idempotent and allowed
-  runStore.update(runId, { status: "completed" });
+  // Re-asserting identical values is idempotent and allowed
+  runStore.update(runId, { status: "completed", finalSummary: "Done" });
   expect(runStore.get(runId)?.status).toBe("completed");
+  expect(runStore.get(runId)?.finalSummary).toBe("Done");
 });
+
+test("RoleBasedRunStore.update enforces immutability across all terminal statuses in SQLite", () => {
+  const runStore = new RoleBasedRunStore();
+
+  for (const termStatus of ROLE_BASED_TERMINAL_STATUSES) {
+    const runId = `run_term_sql_${termStatus}`;
+    runStore.create({
+      id: runId,
+      sessionId: "ses_store_test",
+      objective: "Test SQLite terminal immutability",
+      status: "running",
+      round: 0,
+      budget: { maxTurns: 10, maxParticipants: 3, maxParallelTurns: 1, maxRetriesPerParticipant: 2, maxWallClockMs: 60000 },
+      policy: { roleSequence: ["architect"], loopMode: "once", terminalRoles: ["architect"] },
+      participantIds: ["part_1"],
+      participantsById: {},
+      turnHistory: [],
+      createdAt: "2026-09-17T00:00:00Z",
+    });
+
+    const settledCompletedAt = "2026-09-17T01:00:00Z";
+    const settledSummary = `Settled as ${termStatus}`;
+
+    // Transition to terminal status
+    runStore.update(runId, {
+      status: termStatus,
+      round: 1,
+      finalSummary: settledSummary,
+      completedAt: settledCompletedAt,
+      activeParticipantId: null,
+    });
+
+    const terminal = runStore.get(runId);
+    expect(terminal?.status).toBe(termStatus);
+    expect(terminal?.round).toBe(1);
+    expect(terminal?.finalSummary).toBe(settledSummary);
+    expect(terminal?.completedAt).toBe(settledCompletedAt);
+    expect(terminal?.activeParticipantId).toBeUndefined();
+
+    // 1. Modifying status fails
+    expect(() => {
+      runStore.update(runId, { status: "running" });
+    }).toThrow(BridgeError);
+
+    // 2. Modifying round fails
+    expect(() => {
+      runStore.update(runId, { round: 5 });
+    }).toThrow(BridgeError);
+
+    // 3. Modifying activeParticipantId fails
+    expect(() => {
+      runStore.update(runId, { activeParticipantId: "part_1" });
+    }).toThrow(BridgeError);
+
+    // 4. Modifying finalSummary fails
+    expect(() => {
+      runStore.update(runId, { finalSummary: "Illegal alteration" });
+    }).toThrow(BridgeError);
+
+    // 5. Modifying completedAt fails
+    expect(() => {
+      runStore.update(runId, { completedAt: "2026-09-17T02:00:00Z" });
+    }).toThrow(BridgeError);
+
+    // Idempotent exact-value patch succeeds
+    runStore.update(runId, {
+      status: termStatus,
+      round: 1,
+      finalSummary: settledSummary,
+      completedAt: settledCompletedAt,
+      activeParticipantId: null,
+    });
+
+    const reloaded = runStore.get(runId);
+    expect(reloaded?.status).toBe(termStatus);
+    expect(reloaded?.round).toBe(1);
+    expect(reloaded?.finalSummary).toBe(settledSummary);
+    expect(reloaded?.completedAt).toBe(settledCompletedAt);
+  }
+});
+
 

@@ -6,7 +6,10 @@ import type {
   ParticipantRecord,
   RoleBasedRunPatch,
 } from "../core/collaboration-domain";
-import { isRoleBasedRunTerminalStatus } from "../core/collaboration-domain";
+import {
+  isRoleBasedRunTerminalStatus,
+  assertRoleBasedRunPatchAllowed,
+} from "../core/collaboration-domain";
 import { CollaborationParticipantStore } from "./collaboration-participant-store";
 import { CollaborationTurnStore } from "./collaboration-turn-store";
 import { BridgeError } from "../core/errors";
@@ -83,15 +86,8 @@ export class RoleBasedRunStore {
       throw new BridgeError("not_found", `Role-based run '${id}' not found`, false);
     }
 
-    if (isRoleBasedRunTerminalStatus(existing.status)) {
-      if (updates.status !== undefined && updates.status !== existing.status) {
-        throw new BridgeError(
-          "invalid_state_transition",
-          `Cannot transition role-based run from terminal status '${existing.status}' to '${updates.status}'`,
-          false,
-        );
-      }
-    }
+    const existingRun = this.reconstructRun(existing);
+    assertRoleBasedRunPatchAllowed(existingRun, updates);
 
     const mergedStatus = updates.status ?? existing.status;
     const mergedRound = updates.round !== undefined ? updates.round : existing.round;

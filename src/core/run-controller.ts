@@ -21,6 +21,10 @@ import {
   type ParticipantRecord,
   type RoleBasedRunPatch,
   isRoleBasedRunTerminalStatus,
+  assertRoleBasedRunPatchAllowed,
+  normalizeCancellationReason,
+  RoleRunAbortError,
+  readRoleRunAbortReason,
   P4_DEFAULT_BUDGET,
 } from "./collaboration-domain";
 import type {
@@ -36,6 +40,7 @@ import {
   computeCollaborationMessageHash,
   assertMessageWithinSizeBound,
   normalizeCanonicalText,
+  collaborationMessagesToPriorTurns,
 } from "./collaboration-transcript";
 
 const HARD_MAX_ROUNDS = 100;
@@ -596,6 +601,7 @@ export class RunController {
       rootAbortController,
       persistence,
       cancelledParticipantIds: new Set<string>(),
+      cancelledParticipantReasons: new Map<string, string>(),
     };
     this.activeRoleRuns.set(runId, control);
 
@@ -609,6 +615,10 @@ export class RunController {
       initialRun,
     )
       .catch((error) => {
+        if (error instanceof BridgeError && error.code === "collaboration_persistence_failed") {
+          throw error;
+        }
+
         const run = persistence.getRun(runId);
         const finalStatus: RoleBasedCollaborationRunStatus = control.rootAbortController.signal.aborted
           ? "cancelled"
@@ -623,26 +633,23 @@ export class RunController {
               completedAt,
               activeParticipantId: null,
             });
-          } catch {
-            // Guard against unhandled rejections if persistence failed
+          } catch (persistErr) {
+            throw new BridgeError(
+              "collaboration_persistence_failed",
+              `Failed to persist failure outcome: ${persistErr instanceof Error ? persistErr.message : String(persistErr)}`,
+              false,
+            );
           }
         }
-        let finalTurns: CollaborationTurnRecord[] = [];
-        try {
-          if (typeof persistence.getTurns === "function") {
-            finalTurns = persistence.getTurns(runId);
-          }
-        } catch {
-          finalTurns = [];
+
+        const canonicalRun = persistence.getRun(runId);
+        if (!canonicalRun) {
+          throw new BridgeError("not_found", `Role-based run '${runId}' not found`, false);
         }
+        const canonicalTurns = persistence.getTurns(runId);
         const result: RoleBasedExecutionResult = {
-          run: {
-            ...initialRun,
-            status: finalStatus,
-            finalSummary,
-            completedAt,
-          },
-          turns: finalTurns,
+          run: canonicalRun,
+          turns: canonicalTurns,
         };
         return result;
       })
@@ -709,66 +716,57 @@ export class RunController {
     runId: string,
     reason = "Collaboration run was cancelled",
   ): Promise<boolean> {
-    const control = this.activeRoleRuns.get(runId);
-    if (!control) {
-      const existing = this.getRoleBasedRun(runId);
-      if (!existing || isRoleBasedRunTerminalStatus(existing.status) || existing.status !== "running") {
-        return false;
-      }
-      try {
-        this.requireRolePersistence().finalizeRun(runId, {
-          status: "cancelled",
-          finalSummary: reason,
-          completedAt: new Date().toISOString(),
-          activeParticipantId: null,
-        });
-      } catch (persistErr) {
-        throw new BridgeError(
-          "collaboration_persistence_failed",
-          `Failed to persist run cancellation: ${persistErr instanceof Error ? persistErr.message : String(persistErr)}`,
-          false,
-        );
-      }
-      return true;
-    }
-
-    const currentBefore = control.persistence.getRun(runId);
-    if (currentBefore && isRoleBasedRunTerminalStatus(currentBefore.status)) {
+    const normalizedReason = normalizeCancellationReason(reason);
+    const persistence = this.rolePersistence ?? this.activeRoleRuns.get(runId)?.persistence;
+    if (!persistence) {
       return false;
     }
 
-    if (!control.rootAbortController.signal.aborted) {
-      control.rootAbortController.abort(
-        new DOMException(reason, "AbortError"),
-      );
-    }
-    if (control.activeTurnController && !control.activeTurnController.signal.aborted) {
-      control.activeTurnController.abort(
-        new DOMException(reason, "AbortError"),
-      );
+    const currentBefore = persistence.getRun(runId);
+    if (!currentBefore || isRoleBasedRunTerminalStatus(currentBefore.status) || currentBefore.status !== "running") {
+      return false;
     }
 
-    await this.roleRunSettlements.get(runId)?.catch(() => undefined);
+    const control = this.activeRoleRuns.get(runId);
+    if (control) {
+      const abortError = new RoleRunAbortError({
+        kind: "run_cancelled",
+        reason: normalizedReason,
+      });
 
-    const current = control.persistence.getRun(runId);
-    if (current && current.status === "running") {
-      try {
-        control.persistence.finalizeRun(runId, {
-          status: "cancelled",
-          finalSummary: reason,
-          completedAt: new Date().toISOString(),
-          activeParticipantId: null,
-        });
-      } catch (persistErr) {
-        throw new BridgeError(
-          "collaboration_persistence_failed",
-          `Failed to persist run cancellation: ${persistErr instanceof Error ? persistErr.message : String(persistErr)}`,
-          false,
-        );
+      if (!control.rootAbortController.signal.aborted) {
+        control.rootAbortController.abort(abortError);
       }
+      if (control.activeTurnController && !control.activeTurnController.signal.aborted) {
+        control.activeTurnController.abort(abortError);
+      }
+
+      const settlement = this.roleRunSettlements.get(runId);
+      if (settlement) {
+        await settlement;
+      }
+
+      const finalRun = persistence.getRun(runId);
+      return finalRun?.status === "cancelled";
     }
 
-    return true;
+    // Run is in persistence but not in activeRoleRuns
+    try {
+      persistence.finalizeRun(runId, {
+        status: "cancelled",
+        finalSummary: normalizedReason,
+        completedAt: new Date().toISOString(),
+        activeParticipantId: null,
+      });
+    } catch (persistErr) {
+      throw new BridgeError(
+        "collaboration_persistence_failed",
+        `Failed to persist run cancellation: ${persistErr instanceof Error ? persistErr.message : String(persistErr)}`,
+        false,
+      );
+    }
+    const finalRun = persistence.getRun(runId);
+    return finalRun?.status === "cancelled";
   }
 
   /**
@@ -781,8 +779,12 @@ export class RunController {
     participantId: string,
     reason = "Participant was cancelled",
   ): Promise<boolean> {
-    const control = this.activeRoleRuns.get(runId);
-    const run = control ? control.persistence.getRun(runId) : this.getRoleBasedRun(runId);
+    const normalizedReason = normalizeCancellationReason(reason);
+    const persistence = this.rolePersistence ?? this.activeRoleRuns.get(runId)?.persistence;
+    if (!persistence) {
+      throw new BridgeError("run_not_found", `Role-based run ${runId} not found`, false);
+    }
+    const run = persistence.getRun(runId);
     if (!run) {
       throw new BridgeError("run_not_found", `Role-based run ${runId} not found`, false);
     }
@@ -794,7 +796,12 @@ export class RunController {
       );
     }
 
-    if (isRoleBasedRunTerminalStatus(run.status) || run.status !== "running" || !control) {
+    if (isRoleBasedRunTerminalStatus(run.status) || run.status !== "running") {
+      return false;
+    }
+
+    const control = this.activeRoleRuns.get(runId);
+    if (!control) {
       return false;
     }
 
@@ -803,28 +810,39 @@ export class RunController {
     }
 
     control.cancelledParticipantIds.add(participantId);
+    control.cancelledParticipantReasons.set(participantId, normalizedReason);
 
     const nowIso = new Date().toISOString();
-    const currentPart = run.participantsById[participantId];
+    const abortError = new RoleRunAbortError({
+      kind: "participant_cancelled",
+      participantId,
+      reason: normalizedReason,
+    });
 
     if (control.activeParticipantId === participantId) {
       // Target is active: turn controller abort and root abort will let executeRoleBasedLoop
       // atomically persist turn cancellation, participant cancellation, and run failure together.
       if (control.activeTurnController && !control.activeTurnController.signal.aborted) {
-        control.activeTurnController.abort(
-          new DOMException(reason, "AbortError"),
-        );
+        control.activeTurnController.abort(abortError);
       }
       if (!control.rootAbortController.signal.aborted) {
-        control.rootAbortController.abort(
-          new DOMException(
-            `Required role participant '${participantId}' was cancelled; required workflow failed`,
-            "AbortError",
-          ),
-        );
+        control.rootAbortController.abort(abortError);
       }
+
+      const settlement = this.roleRunSettlements.get(runId);
+      if (settlement) {
+        await settlement;
+      }
+
+      const finalRun = persistence.getRun(runId);
+      return (
+        finalRun?.status === "failed" &&
+        finalRun?.participantsById[participantId]?.status === "cancelled"
+      );
     } else {
       // Non-active target (idle or pending): atomically mark target participant cancelled and run failed.
+      let persistenceError: unknown;
+      const currentPart = run.participantsById[participantId];
       if (currentPart && currentPart.status !== "cancelled") {
         const cancelledPart: ParticipantRecord = {
           ...currentPart,
@@ -838,39 +856,51 @@ export class RunController {
               id: runId,
               status: "failed",
               activeParticipantId: null,
-              finalSummary: `Required role participant '${participantId}' was cancelled; required workflow failed`,
+              finalSummary: `Required participant '${participantId}' was cancelled: ${normalizedReason}`,
               completedAt: nowIso,
             },
           });
         } catch (persistErr) {
-          throw new BridgeError(
-            "collaboration_persistence_failed",
-            `Failed to persist participant cancellation: ${persistErr instanceof Error ? persistErr.message : String(persistErr)}`,
-            false,
-          );
+          persistenceError = persistErr;
         }
       }
 
+      // Always abort runtime regardless of persistence error
       if (!control.rootAbortController.signal.aborted) {
-        control.rootAbortController.abort(
-          new DOMException(
-            `Required role participant '${participantId}' was cancelled; required workflow failed`,
-            "AbortError",
-          ),
-        );
+        control.rootAbortController.abort(abortError);
       }
       if (control.activeTurnController && !control.activeTurnController.signal.aborted) {
-        control.activeTurnController.abort(
-          new DOMException(
-            `Required role participant '${participantId}' was cancelled; required workflow failed`,
-            "AbortError",
-          ),
+        control.activeTurnController.abort(abortError);
+      }
+
+      const settlement = this.roleRunSettlements.get(runId);
+      if (settlement) {
+        try {
+          await settlement;
+        } catch (settleErr) {
+          if (!persistenceError) {
+            persistenceError = settleErr;
+          }
+        }
+      }
+
+      if (persistenceError) {
+        if (persistenceError instanceof BridgeError) {
+          throw persistenceError;
+        }
+        throw new BridgeError(
+          "collaboration_persistence_failed",
+          `Failed to persist participant cancellation: ${persistenceError instanceof Error ? persistenceError.message : String(persistenceError)}`,
+          false,
         );
       }
-    }
 
-    await this.roleRunSettlements.get(runId)?.catch(() => undefined);
-    return true;
+      const finalRun = persistence.getRun(runId);
+      return (
+        finalRun?.status === "failed" &&
+        finalRun?.participantsById[participantId]?.status === "cancelled"
+      );
+    }
   }
 
   /**
@@ -914,7 +944,7 @@ export class RunController {
     const participantIds = [...initialRun.participantIds];
 
     const initializedParticipants = new Set<string>();
-    const priorTurns: PriorCollaborationTurn[] = [];
+    let priorTurns: PriorCollaborationTurn[] = [];
     const turnHistory: string[] = [];
     const turns: CollaborationTurnRecord[] = [];
     let messageSequenceIndex = 0;
@@ -944,6 +974,13 @@ export class RunController {
             if (turnIndex >= budget.maxTurns) {
               runStatus = "budget_exhausted";
               finalSummary = `Exceeded maximum allowed turns (${budget.maxTurns})`;
+              this.finalizeRoleRunDurably(persistence, runId, {
+                status: "budget_exhausted",
+                round,
+                activeParticipantId: null,
+                finalSummary,
+                completedAt: clock(),
+              });
               break loop;
             }
 
@@ -952,18 +989,44 @@ export class RunController {
             if (elapsed >= budget.maxWallClockMs) {
               runStatus = "timed_out";
               finalSummary = `Exceeded maximum wall-clock deadline (${budget.maxWallClockMs} ms)`;
+              this.finalizeRoleRunDurably(persistence, runId, {
+                status: "timed_out",
+                round,
+                activeParticipantId: null,
+                finalSummary,
+                completedAt: clock(),
+              });
               break loop;
             }
 
             // Check cancellation signal before turn execution
             if (control.cancelledParticipantIds.size > 0) {
+              const cancelledId = [...control.cancelledParticipantIds][0]!;
+              const partReason = control.cancelledParticipantReasons.get(cancelledId);
               runStatus = "failed";
-              finalSummary = `Required role participant '${[...control.cancelledParticipantIds].join(", ")}' was cancelled; required workflow failed`;
+              finalSummary = partReason
+                ? `Required participant '${cancelledId}' was cancelled: ${partReason}`
+                : `Required role participant '${cancelledId}' was cancelled; required workflow failed`;
+              this.finalizeRoleRunDurably(persistence, runId, {
+                status: "failed",
+                round,
+                activeParticipantId: null,
+                finalSummary,
+                completedAt: clock(),
+              });
               break loop;
             }
             if (control.rootAbortController.signal.aborted) {
+              const abortReason = readRoleRunAbortReason(control.rootAbortController.signal.reason);
               runStatus = "cancelled";
-              finalSummary = "Collaboration run was cancelled";
+              finalSummary = abortReason?.kind === "run_cancelled" ? abortReason.reason : (abortReason ? abortReason.reason : "Collaboration run was cancelled");
+              this.finalizeRoleRunDurably(persistence, runId, {
+                status: "cancelled",
+                round,
+                activeParticipantId: null,
+                finalSummary,
+                completedAt: clock(),
+              });
               break loop;
             }
 
@@ -1168,8 +1231,11 @@ export class RunController {
                   lastActiveAt: turnCompletedAt,
                 };
 
+                const partReason = control.cancelledParticipantReasons.get(runtime.participantId);
                 runStatus = "failed";
-                finalSummary = `Required role participant '${runtime.participantId}' was cancelled; required workflow failed`;
+                finalSummary = partReason
+                  ? `Required participant '${runtime.participantId}' was cancelled: ${partReason}`
+                  : `Required role participant '${runtime.participantId}' was cancelled; required workflow failed`;
 
                 try {
                   persistence.recordTurnTransaction({
@@ -1220,8 +1286,12 @@ export class RunController {
                   lastActiveAt: turnCompletedAt,
                 };
 
+                const otherId = [...control.cancelledParticipantIds][0];
+                const partReason = otherId ? control.cancelledParticipantReasons.get(otherId) : undefined;
                 runStatus = "failed";
-                finalSummary = `Required role participant '${[...control.cancelledParticipantIds].join(", ")}' was cancelled; required workflow failed`;
+                finalSummary = (otherId && partReason)
+                  ? `Required participant '${otherId}' was cancelled: ${partReason}`
+                  : `Required role participant '${[...control.cancelledParticipantIds].join(", ")}' was cancelled; required workflow failed`;
 
                 try {
                   persistence.recordTurnTransaction({
@@ -1272,8 +1342,9 @@ export class RunController {
                   lastActiveAt: turnCompletedAt,
                 };
 
+                const abortReason = readRoleRunAbortReason(control.rootAbortController.signal.reason);
                 runStatus = "cancelled";
-                finalSummary = "Collaboration run was cancelled";
+                finalSummary = abortReason?.kind === "run_cancelled" ? abortReason.reason : (abortReason ? abortReason.reason : "Collaboration run was cancelled");
 
                 try {
                   persistence.recordTurnTransaction({
@@ -1563,6 +1634,8 @@ export class RunController {
               turnIndex += 1;
               control.activeParticipantId = undefined;
 
+              priorTurns = collaborationMessagesToPriorTurns(persistence.getTranscript(runId));
+
               if (canRetry) {
                 attemptInRole += 1;
                 continue roleAttemptLoop;
@@ -1672,6 +1745,7 @@ export class RunController {
 
             if (messageRecord) {
               messageSequenceIndex += 1;
+              priorTurns = collaborationMessagesToPriorTurns(persistence.getTranscript(runId));
             }
             turnIndex += 1;
             turns.push(turnRecord);
@@ -1680,19 +1754,8 @@ export class RunController {
             control.activeParticipantId = undefined;
 
             if (decision.type === "message") {
-              priorTurns.push({
-                participantId: runtime.participantId,
-                roleId: runtime.roleId,
-                decisionType: "message",
-                text: messageRecord!.content,
-              });
+              // Message turn completed and priorTurns updated
             } else if (decision.type === "done") {
-              priorTurns.push({
-                participantId: runtime.participantId,
-                roleId: runtime.roleId,
-                decisionType: "done",
-                text: messageRecord!.content,
-              });
               if (isTerminalRole) {
                 runStatus = "completed";
                 finalSummary = decision.summary;
@@ -1716,12 +1779,32 @@ export class RunController {
           if (config.policy.loopMode === "once") {
             runStatus = "completed";
             finalSummary = finalSummary ?? "Role sequence completed.";
+            this.finalizeRoleRunDurably(persistence, runId, {
+              status: "completed",
+              round,
+              activeParticipantId: null,
+              finalSummary,
+              completedAt: clock(),
+            });
             break loop;
           } else if (config.policy.loopMode === "repeat_until_done") {
             round += 1;
           }
         }
       } // end while (runStatus === "running")
+
+      // Ensure durable terminal/paused settlement BEFORE closing adapters
+      const currentPersisted = persistence.getRun(runId);
+      if (currentPersisted && !isRoleBasedRunTerminalStatus(currentPersisted.status) && currentPersisted.status !== "paused") {
+        const completedAt = runStatus === "paused" ? null : clock();
+        this.finalizeRoleRunDurably(persistence, runId, {
+          status: runStatus,
+          round,
+          finalSummary: finalSummary ?? null,
+          completedAt,
+          activeParticipantId: null,
+        });
+      }
     } finally {
       const closed = new Set<string>();
       const initializedReverse = [...initializedParticipants].reverse();
@@ -1746,55 +1829,38 @@ export class RunController {
       }
     }
 
-    const completedAt = runStatus === "paused" ? null : clock();
-    try {
-      persistence.finalizeRun(runId, {
-        status: runStatus,
-        round,
-        finalSummary: finalSummary ?? null,
-        completedAt,
-        activeParticipantId: null,
-      });
-    } catch (persistErr) {
-      throw new BridgeError(
-        "collaboration_persistence_failed",
-        `Failed to finalize collaboration run: ${persistErr instanceof Error ? persistErr.message : String(persistErr)}`,
-        false,
-      );
+    const canonicalRun = persistence.getRun(runId);
+    if (!canonicalRun) {
+      throw new BridgeError("not_found", `Role-based run '${runId}' not found`, false);
     }
-
-    for (const cancelledId of control.cancelledParticipantIds) {
-      if (participantsById[cancelledId]) {
-        participantsById[cancelledId] = {
-          ...participantsById[cancelledId]!,
-          status: "cancelled",
-          lastActiveAt: completedAt ?? clock(),
-        };
-      }
-    }
-
-    const roleBasedRun: RoleBasedCollaborationRun = {
-      id: runId,
-      sessionId,
-      objective: config.objective,
-      status: runStatus,
-      round,
-      budget,
-      policy: config.policy,
-      participantIds,
-      participantsById,
-      activeParticipantId: undefined,
-      turnHistory,
-      createdAt: initialRun.createdAt,
-      startedAt: initialRun.startedAt,
-      completedAt: runStatus === "paused" ? undefined : (completedAt ?? undefined),
-      finalSummary,
-    };
-
+    const canonicalTurns = persistence.getTurns(runId);
     return {
-      run: roleBasedRun,
-      turns,
+      run: canonicalRun,
+      turns: canonicalTurns,
     };
+  }
+
+  private finalizeRoleRunDurably(
+    persistence: RoleBasedRunPersistence,
+    runId: string,
+    updates: RoleBasedRunPatch,
+  ): RoleBasedCollaborationRun {
+    const existing = persistence.getRun(runId);
+    if (!existing) {
+      throw new BridgeError("not_found", `Role-based run '${runId}' not found`, false);
+    }
+
+    if (isRoleBasedRunTerminalStatus(existing.status)) {
+      assertRoleBasedRunPatchAllowed(existing, updates);
+      return existing;
+    }
+
+    persistence.finalizeRun(runId, updates);
+    const finalRun = persistence.getRun(runId);
+    if (!finalRun) {
+      throw new BridgeError("not_found", `Role-based run '${runId}' not found after finalization`, false);
+    }
+    return finalRun;
   }
 
   getRun(runId: string): CollaborationRun | null {

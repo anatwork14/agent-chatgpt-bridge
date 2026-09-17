@@ -33,6 +33,7 @@ export interface ActiveRoleRunControl {
   activeParticipantId?: string;
   activeTurnController?: AbortController;
   readonly cancelledParticipantIds: Set<string>;
+  readonly cancelledParticipantReasons: Map<string, string>;
 }
 
 /**
