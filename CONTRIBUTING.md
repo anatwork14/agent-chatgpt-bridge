@@ -1,52 +1,72 @@
 # Contributing
 
-Codex Web GPT was created and is primarily developed and maintained by
-[@miuuyy](https://github.com/miuuyy). Product direction, core architecture, and release decisions
-remain with the creator. Other contributors listed by GitHub have provided focused external fixes
-rather than shared product or architectural ownership.
+Agent Bridge is a provider-agnostic collaboration runtime. Contributions are welcome when they preserve the separation between bridge orchestration, provider/router ownership, and the execution/product layers above it.
 
-External contributions are welcome, but this is an intentionally maintainer-led project. Pull
-requests are expected to be small, focused, and easy to review and verify. Good contributions
-include isolated bug fixes, regression tests, documentation corrections, and narrow
-platform-specific fixes.
+Before opening a bug report, reproduce on the current revision when possible, use the structured issue form, and share only privacy-safe evidence. Never upload cookies, OAuth tokens, API keys, browser storage, capability URLs, raw private prompts, provider logs containing secrets, or unredacted local paths.
 
-Before opening a bug report, work through [TROUBLESHOOTING.md](TROUBLESHOOTING.md) and use the
-structured issue form. Reproduce once on the latest release and attach the privacy-safe export from
-**Activity → Export safe log**; never upload raw browser state, credentials, or unredacted logs.
+For architectural changes, open an issue/design discussion before a large implementation. Focused pull requests with explicit invariants and verification are much easier to review than broad rewrites.
 
-Large feature branches, broad refactors, rewrites, new providers, and changes to core behavior or
-architecture are generally not accepted. In rare cases they may be considered, but discuss the
-proposal in an issue before implementation. Prior discussion does not guarantee acceptance, and a
-large unsolicited pull request may be closed even when substantial work went into it.
+## Architecture boundaries
 
-## Scope and invariants
+- **Agent Bridge** owns persistent collaboration sessions, canonical transcripts, routing policy, bounded workflows, external-agent adapters, permissions, persistence, and auditability.
+- **ChatGPT Web provider** owns browser/UI interaction and its authenticated launcher profile.
+- **codex-router** owns downstream provider credentials and provider-specific connectivity/normalization.
+- **ACP agent clients** own their installation and provider authentication state.
+- **ARC** remains the execution plane for task DAGs, isolation, experiments, recovery, and ledgers.
+- **CompanyOS** remains the coordination/product layer.
 
-- Keep the project focused on ChatGPT web-backed Codex models. Generic providers and unrelated
-  product surfaces are out of scope.
-- Model selection is explicit. Never silently fall back to another model or reasoning level.
-- Full mode exposes local tools only through the active outer Codex registry and official MCP
-  tunnel. Browser-only mode must not create a broker capability or attach an MCP connector.
-- Every available ChatGPT Web effort has the same turn-bound MCP capability in Full mode. Do not
-  add effort-specific MCP exclusions.
-- Preserve fail-closed behavior. A selector or protocol failure must return an explicit error, not
-  pick another option or claim success.
-- Never commit browser state, cookies, API keys, tunnel IDs, Codex history, generated logs, or
-  absolute user paths.
+Prefer protocol composition and explicit adapters over merging provider/client implementations into the bridge.
+
+## Core invariants
+
+- `SessionManager` remains the canonical bridge-history owner.
+- Provider/model/agent identity is explicit and globally unambiguous.
+- Fallback is disabled unless explicitly configured and audited; never silently mutate persistent session identity.
+- Model/agent output is untrusted and cannot grant itself tools, filesystem, terminal, network, or credential access.
+- Credentials stay with the system that owns them. Do not persist provider/API/subscription-agent credentials in bridge state.
+- Cancellation must reach the exact active provider request or owned external-agent process.
+- External-agent processes must be owned and cleaned up; do not leave detached/orphaned workers.
+- Autonomous workflows are bounded by rounds, wall-clock/failure budgets, explicit terminal states, and cancellation.
+- Preserve fail-closed behavior for protocol drift, unsupported callbacks, ambiguous routing, and required audit/persistence failures.
+- Never commit browser state, cookies, API keys, OAuth tokens, capability URLs, generated private logs, or absolute user-specific paths.
 
 ## Before opening a pull request
 
-1. Run `bun install --frozen-lockfile` in the repository root and in `launcher/`.
-2. Run `bun run verify`.
-3. Add a focused regression test for behavior changes.
-4. For browser UI changes, include the observed DOM evidence and a reproducible fixture. Do not
-   broaden selectors speculatively.
-5. Keep Terms and trademark claims factual. Do not market the project as a quota or rate-limit
-   bypass.
-6. Manually test the affected behavior. DEV mode is sufficient only when the change does not affect
-   local-tool execution, MCP execution, or the outer Codex agent loop. Execution changes require a
-   real installed Codex integration; DEV simulation is not end-to-end acceptance evidence.
+1. Run `bun install --frozen-lockfile` in the repository root.
+2. If launcher code is affected, run `bun install --frozen-lockfile` in `launcher/` too.
+3. Run `bun run verify`.
+4. Add focused deterministic regression coverage for behavior changes.
+5. Manually test any changed real provider/agent boundary; deterministic mocks are not live interoperability evidence.
+6. For ACP changes, follow `docs/ACP_LIVE_SMOKE.md` and record the client version, OS, bridge SHA, and privacy-safe JSON result.
+7. For ChatGPT Web UI changes, include observed/reproducible DOM evidence rather than speculative selector broadening.
+8. For codex-router changes, preserve the downstream-provider-plane boundary and namespaced model identity.
+9. For launcher changes, preserve macOS, Windows, and Linux packaging/smoke expectations.
+10. Keep Terms/trademark/security claims factual and do not present the bridge as a way to bypass authentication, permissions, or provider limits.
 
-Launcher changes must preserve native packaging on macOS, Windows, and Linux. Platform packages
-must be built on their matching operating system. See [DEV chat mode](docs/dev-chat.md) for isolated
-browser and MCP development, and [release validation](docs/release-validation.md) for the required
-account-bound release checks.
+## Evidence expectations
+
+A useful pull request names what was actually tested:
+
+```text
+OS:
+Bridge SHA:
+Provider / agent:
+Provider / agent version:
+Profile / model:
+Deterministic tests:
+Live test:
+Result:
+```
+
+Write `not run` rather than implying a live path was exercised when only CI/mocks were used.
+
+## Relevant docs
+
+- `implementation.md` — authoritative existing implementation invariants
+- `GOALS.md` — provider-agnostic product direction and roadmap
+- `IMPLEMENTATION_PROGRESS.md` — evidence-based milestone status
+- `docs/security-model.md` — trust and permission boundaries
+- `docs/agent-adapters.md` — external-agent adapter semantics
+- `docs/ACP_LIVE_SMOKE.md` — P3 real-client ACP release gate
+- `docs/CODEX_ROUTER.md` — downstream router integration
+- `docs/development.md` — contributor workflow
