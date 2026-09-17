@@ -14,6 +14,7 @@ import {
   computeCollaborationMessageHash,
   type CollaborationMessageRecord,
 } from "../core/collaboration-transcript";
+import { BridgeError } from "../core/errors";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -412,3 +413,120 @@ test("CollaborationMessageStore enforces SHA-256 integrity and sequence_index or
     });
   }).toThrow();
 });
+
+test("RoleBasedRunStore.update patch semantics: concrete vs null vs omitted", () => {
+  const runStore = new RoleBasedRunStore();
+  const runId = "run_patch_test_1";
+
+  runStore.create({
+    id: runId,
+    sessionId: "ses_store_test",
+    objective: "Test SQLite patch semantics",
+    status: "running",
+    round: 0,
+    budget: defaultBudget,
+    policy: defaultPolicy,
+    participantIds: [],
+    participantsById: {},
+    turnHistory: [],
+    createdAt: "2026-09-17T00:00:00Z",
+    activeParticipantId: "part_active",
+    finalSummary: "Initial summary text",
+    completedAt: "2026-09-17T00:01:00Z",
+  });
+
+  const initial = runStore.get(runId);
+  expect(initial?.activeParticipantId).toBe("part_active");
+  expect(initial?.finalSummary).toBe("Initial summary text");
+  expect(initial?.completedAt).toBe("2026-09-17T00:01:00Z");
+
+  // 1. Omitted fields remain untouched while updated fields change
+  runStore.update(runId, {
+    round: 1,
+  });
+  const afterRoundUpdate = runStore.get(runId);
+  expect(afterRoundUpdate?.round).toBe(1);
+  expect(afterRoundUpdate?.activeParticipantId).toBe("part_active");
+  expect(afterRoundUpdate?.finalSummary).toBe("Initial summary text");
+  expect(afterRoundUpdate?.completedAt).toBe("2026-09-17T00:01:00Z");
+
+  // 2. Explicit null clears activeParticipantId without wiping finalSummary or completedAt
+  runStore.update(runId, {
+    activeParticipantId: null,
+  });
+  const afterActiveNull = runStore.get(runId);
+  expect(afterActiveNull?.activeParticipantId).toBeUndefined();
+  expect(afterActiveNull?.finalSummary).toBe("Initial summary text");
+  expect(afterActiveNull?.completedAt).toBe("2026-09-17T00:01:00Z");
+
+  // 3. Explicit null clears finalSummary and completedAt
+  runStore.update(runId, {
+    finalSummary: null,
+    completedAt: null,
+  });
+  const afterAllNull = runStore.get(runId);
+  expect(afterAllNull?.finalSummary).toBeUndefined();
+  expect(afterAllNull?.completedAt).toBeUndefined();
+
+  // 4. Concrete value sets activeParticipantId again
+  runStore.update(runId, {
+    activeParticipantId: "part_new_active",
+  });
+  const afterNewActive = runStore.get(runId);
+  expect(afterNewActive?.activeParticipantId).toBe("part_new_active");
+});
+
+test("RoleBasedRunStore.update enforces terminal state immutability in SQLite", () => {
+  const runStore = new RoleBasedRunStore();
+  const runId = "run_terminal_immutable_test";
+
+  runStore.create({
+    id: runId,
+    sessionId: "ses_store_test",
+    objective: "Test terminal immutability in SQLite",
+    status: "running",
+    round: 0,
+    budget: defaultBudget,
+    policy: defaultPolicy,
+    participantIds: [],
+    participantsById: {},
+    turnHistory: [],
+    createdAt: "2026-09-17T00:00:00Z",
+  });
+
+  // Transition running -> completed (terminal)
+  runStore.update(runId, {
+    status: "completed",
+    completedAt: "2026-09-17T00:01:00Z",
+    finalSummary: "Done",
+  });
+
+  const completed = runStore.get(runId);
+  expect(completed?.status).toBe("completed");
+
+  // Attempting to transition from completed -> cancelled must throw invalid_state_transition
+  expect(() => {
+    runStore.update(runId, { status: "cancelled" });
+  }).toThrow(BridgeError);
+
+  try {
+    runStore.update(runId, { status: "cancelled" });
+  } catch (err) {
+    expect(err).toBeInstanceOf(BridgeError);
+    expect((err as BridgeError).code).toBe("invalid_state_transition");
+  }
+
+  // Attempting to transition from completed -> failed must throw invalid_state_transition
+  expect(() => {
+    runStore.update(runId, { status: "failed" });
+  }).toThrow(BridgeError);
+
+  // Updating non-status fields on a terminal run is allowed
+  runStore.update(runId, { finalSummary: "Amended summary" });
+  expect(runStore.get(runId)?.finalSummary).toBe("Amended summary");
+
+  // Re-asserting the identical terminal status is idempotent and allowed
+  runStore.update(runId, { status: "completed" });
+  expect(runStore.get(runId)?.status).toBe("completed");
+});
+

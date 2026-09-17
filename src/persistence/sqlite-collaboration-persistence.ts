@@ -6,6 +6,7 @@ import type {
   RoleBasedCollaborationRun,
   CollaborationTurnRecord,
   ParticipantRecord,
+  RoleBasedRunPatch,
 } from "../core/collaboration-domain";
 import type { ParticipantAssignmentPlan } from "../core/participant-assignment";
 import type { CollaborationMessageRecord } from "../core/collaboration-transcript";
@@ -45,7 +46,7 @@ export class SqliteCollaborationPersistence implements RoleBasedRunPersistence {
     readonly turn: CollaborationTurnRecord;
     readonly message?: CollaborationMessageRecord;
     readonly participant: ParticipantRecord;
-    readonly runUpdates: Partial<RoleBasedCollaborationRun> & { readonly id: string };
+    readonly runUpdates: RoleBasedRunPatch & { readonly id: string };
   }): void {
     const db = getDatabase();
     db.transaction(() => {
@@ -67,7 +68,7 @@ export class SqliteCollaborationPersistence implements RoleBasedRunPersistence {
 
   updateParticipantAndRunTransaction(params: {
     readonly participant: ParticipantRecord;
-    readonly runUpdates: Partial<RoleBasedCollaborationRun> & { readonly id: string };
+    readonly runUpdates: RoleBasedRunPatch & { readonly id: string };
   }): void {
     const db = getDatabase();
     db.transaction(() => {
@@ -76,12 +77,16 @@ export class SqliteCollaborationPersistence implements RoleBasedRunPersistence {
     })();
   }
 
-  finalizeRun(id: string, updates: Partial<RoleBasedCollaborationRun>): void {
+  finalizeRun(id: string, updates: RoleBasedRunPatch): void {
     this.runStore.update(id, updates);
   }
 
   getRun(id: string): RoleBasedCollaborationRun | null {
     return this.runStore.get(id);
+  }
+
+  getTurns(runId: string): CollaborationTurnRecord[] {
+    return this.turnStore.listByRun(runId);
   }
 
   listRunsBySession(sessionId: string): RoleBasedCollaborationRun[] {

@@ -17,6 +17,7 @@ import {
 } from "./collaboration-runtime";
 import { createParticipantAssignmentPlans, createInitialParticipantRecords } from "./participant-assignment";
 import { BridgeError } from "./errors";
+import { InMemoryRoleBasedRunPersistence } from "./collaboration-persistence";
 
 class FakeRunStore {
   private readonly runs = new Map<string, any>();
@@ -171,6 +172,7 @@ describe("P4.3 Role-Based RunController Orchestration", () => {
       new FakeSessionManager() as any,
       new FakeAuditStore() as any,
       () => { throw new Error("getAgentAdapter should not be called in role workflow"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     const result = await controller.executeRoleBasedRun("ses_test", config, prepared);
@@ -244,6 +246,7 @@ describe("P4.3 Role-Based RunController Orchestration", () => {
       new FakeSessionManager() as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     await controller.executeRoleBasedRun("ses_test", config, prepared);
@@ -307,6 +310,7 @@ describe("P4.3 Role-Based RunController Orchestration", () => {
       new FakeSessionManager() as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     await controller.executeRoleBasedRun("ses_test", config, prepared);
@@ -369,6 +373,7 @@ describe("P4.3 Role-Based RunController Orchestration", () => {
       new FakeSessionManager() as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     const result = await controller.executeRoleBasedRun("ses_test", config, prepared);
@@ -421,6 +426,7 @@ describe("P4.3 Role-Based RunController Orchestration", () => {
       new FakeSessionManager() as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     const result = await controller.executeRoleBasedRun("ses_test", config, prepared);
@@ -475,6 +481,7 @@ describe("P4.3 Role-Based RunController Orchestration", () => {
       new FakeSessionManager() as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     await controller.executeRoleBasedRun("ses_test", config, prepared);
@@ -527,6 +534,7 @@ describe("P4.3 Role-Based RunController Orchestration", () => {
       new FakeSessionManager() as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     const result = await controller.executeRoleBasedRun("ses_test", config, prepared);
@@ -576,6 +584,7 @@ describe("P4.3 Role-Based RunController Orchestration", () => {
       new FakeSessionManager() as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     const result = await controller.executeRoleBasedRun("ses_test", config, prepared, {
@@ -625,6 +634,7 @@ describe("P4.3 Role-Based RunController Orchestration", () => {
       new FakeSessionManager() as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     const result = await controller.executeRoleBasedRun("ses_test", config, prepared, {
@@ -664,6 +674,7 @@ describe("P4.3 Role-Based RunController Orchestration", () => {
       new FakeSessionManager() as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     const result = await controller.executeRoleBasedRun("ses_test", config, prepared);
@@ -692,6 +703,7 @@ describe("P4.3 Role-Based RunController Orchestration", () => {
       new FakeSessionManager("closed") as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     expect(controller.executeRoleBasedRun("ses_closed", config, prepared)).rejects.toThrow(
@@ -731,6 +743,7 @@ describe("P4.3 Role-Based RunController Orchestration", () => {
       new FakeSessionManager() as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     await controller.executeRoleBasedRun("ses_test", config, prepared);
@@ -783,6 +796,7 @@ describe("P4.3 Role-Based RunController Orchestration", () => {
     // Failing persistence mock that throws on turn recording
     const failingPersistence = {
       createInitialRun: () => {},
+      updateParticipantAndRunTransaction: () => {},
       recordTurnTransaction: () => {
         throw new Error("Disk I/O error during turn commit");
       },
@@ -790,6 +804,7 @@ describe("P4.3 Role-Based RunController Orchestration", () => {
       getRun: () => null,
       listRunsBySession: () => [],
       getTranscript: () => [],
+      getTurns: () => [],
     };
 
     const controller = new RunController(

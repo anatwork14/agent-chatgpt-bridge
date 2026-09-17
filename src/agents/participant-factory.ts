@@ -390,7 +390,7 @@ export function bindParticipant(
   factory: ParticipantAdapterFactory = createParticipantAdapter,
 ): ParticipantRuntime {
   const adapter = factory(plan.config);
-  return Object.freeze({
+  return Object.seal({
     participantId: plan.participantId,
     roleId: plan.roleId,
     adapterId: plan.adapterId,

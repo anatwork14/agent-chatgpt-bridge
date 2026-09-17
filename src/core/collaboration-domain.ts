@@ -168,6 +168,65 @@ export type RoleBasedCollaborationRunStatus =
   | "budget_exhausted"
   | "timed_out";
 
+export const ROLE_BASED_TERMINAL_STATUSES = [
+  "completed",
+  "failed",
+  "cancelled",
+  "budget_exhausted",
+  "timed_out",
+] as const;
+
+export type RoleBasedRunTerminalStatus = (typeof ROLE_BASED_TERMINAL_STATUSES)[number];
+
+export function isRoleBasedRunTerminalStatus(
+  status: RoleBasedCollaborationRunStatus,
+): status is RoleBasedRunTerminalStatus {
+  return (ROLE_BASED_TERMINAL_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * Explicit patch representation for updating a RoleBasedCollaborationRun.
+ * - omitted (undefined): unchanged
+ * - null: clear to undefined (SQL NULL)
+ * - concrete value: set
+ */
+export interface RoleBasedRunPatch {
+  readonly status?: RoleBasedCollaborationRunStatus;
+  readonly round?: number;
+  readonly activeParticipantId?: string | null;
+  readonly finalSummary?: string | null;
+  readonly completedAt?: string | null;
+}
+
+export function applyRoleBasedRunPatch(
+  run: RoleBasedCollaborationRun,
+  patch: RoleBasedRunPatch,
+): RoleBasedCollaborationRun {
+  return {
+    ...run,
+    status: patch.status !== undefined ? patch.status : run.status,
+    round: patch.round !== undefined ? patch.round : run.round,
+    activeParticipantId:
+      patch.activeParticipantId === null
+        ? undefined
+        : patch.activeParticipantId !== undefined
+          ? patch.activeParticipantId
+          : run.activeParticipantId,
+    finalSummary:
+      patch.finalSummary === null
+        ? undefined
+        : patch.finalSummary !== undefined
+          ? patch.finalSummary
+          : run.finalSummary,
+    completedAt:
+      patch.completedAt === null
+        ? undefined
+        : patch.completedAt !== undefined
+          ? patch.completedAt
+          : run.completedAt,
+  };
+}
+
 /**
  * Additive P4 multi-participant collaboration run record.
  * Uses deterministic participant ordering through participantIds, with

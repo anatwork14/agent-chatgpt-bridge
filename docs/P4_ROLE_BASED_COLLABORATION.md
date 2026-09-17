@@ -412,30 +412,28 @@ ACP tool requests originating from external agents are subject to the same stric
 ### 9.1 Multi-Level Cancellation Hierarchy
 
 ```text
-                  POST /runs/{id}/cancel (Run-Level)
+                  cancelRoleBasedRun(runId) (Run-Level)
                                   │
-          ┌───────────────────────┴───────────────────────┐
-          ▼                                               ▼
-Abort Current Turn AbortSignal                  Cancel Bridge Session
-          │                                               │
-          ▼                                               ▼
-Broadcast Abort to ALL Active Participants       Drain / Cancel Pending ChatGPT Turn
-          │
-          ▼
-Send SIGTERM to Participant Process Trees
-          │ (Grace Period: 5,000 ms)
-          ▼
-Send SIGKILL if still alive
-          │
-          ▼
-Update SQLite Run & Participant Status to 'cancelled'
+                                  ▼
+                     Abort Root AbortController
+                                  │
+                                  ▼
+                   Abort Active Turn AbortSignal
+                                  │
+                                  ▼
+             Close Active & Initialized Participant Adapters
+                                  │
+                                  ▼
+    Atomically Update SQLite Run & Active Participant Status to 'cancelled'
+        (Pending participants remain 'pending' without modification)
 ```
 
 ### 9.2 Addressable Participant Cancellation
 P4 supports granular participant-level cancellation:
 - **API:** `cancelRoleParticipant(runId, participantId)`
 - Validates run ownership (rejects attempts to cancel foreign participants from another run).
-- If the participant is actively executing a turn, aborts the active turn controller without aborting uncancelled peers.
+- If the participant is actively executing a turn, aborts the active turn controller and fails the run atomically in SQLite (`turn.status = 'cancelled'`, `participant.status = 'cancelled'`, `run.status = 'failed'`).
+- If another participant is cancelled while a peer is executing, the interrupted peer is safely transitioned to `idle` (not cancelled or active) while the cancelled target is marked `cancelled` and the run marked `failed`.
 - If the participant is idle or pending, marks the participant cancelled and fails the run (fail-closed requirement for sequential workflow dependencies).
 - Strictly does not touch `SessionManager.cancel()` as role runs coordinate via hub-and-spoke without ChatGPT web turns.
 - Marks participant status as `cancelled` and run status as `failed` (no retries).
@@ -457,9 +455,9 @@ Every possible failure mode is explicitly classified with deterministic remediat
 
 | Failure Mode | Trigger Condition | RunController Response | Status Outcome |
 | :--- | :--- | :--- | :--- |
-| **Participant Process Crash** | Non-zero exit, SIGSEGV, SIGBUS | Decrement retry budget; restart participant if retries remain; else escalate to run failure. | `participant.failed` → `run.failed` |
-| **Turn Timeout** | Turn duration exceeds per-turn deadline | Abort turn `AbortController`; SIGTERM process; record timeout in audit log; evaluate retry. | `participant.turn.failed` (timed out) |
-| **Wall-Clock Exhaustion** | Run duration exceeds `budget.maxWallClockMs` | Abort all participants; cancel session; finalize run. | `run.budget_exhausted` (terminal) |
+| **Participant Process Crash** | Non-zero exit, SIGSEGV, SIGBUS, or thrown error | Close crashed adapter; recreate same participant adapter instance via factory without provider rotation; retry if retries remain; else escalate to run failure. | `participant.failed` → `run.failed` |
+| **Turn Timeout** | Turn duration exceeds per-turn deadline | Abort turn `AbortController`; record timeout in audit log; evaluate retry. | `participant.turn.failed` (timed out) |
+| **Wall-Clock Exhaustion** | Run duration exceeds `budget.maxWallClockMs` | Abort active participant turn; do not touch bridge session; finalize run. | `run.timed_out` (terminal) |
 | **Turn Limit Exhaustion** | Run turns reach `budget.maxTurns` | Cease scheduling; finalize run with summary of incomplete progress. | `run.budget_exhausted` (terminal) |
 | **Malformed Decision Frame** | JSON parsing failure, missing fields | Count as failure; retry up to `maxRetriesPerParticipant`; fail closed. | `participant.turn.failed` |
 | **Explicit Rejection** | Agent emits decision `{ type: "error", retryable: false }` | No retry; advance or terminate based on role importance. | `run.failed` or handoff |

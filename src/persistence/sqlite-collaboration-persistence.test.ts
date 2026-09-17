@@ -13,6 +13,7 @@ import {
   computeCollaborationMessageHash,
   type CollaborationMessageRecord,
 } from "../core/collaboration-transcript";
+import { BridgeError } from "../core/errors";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -598,3 +599,148 @@ test("SqliteCollaborationPersistence: disk restart durability with temporary SQL
     }
   }
 });
+
+test("SqliteCollaborationPersistence: getTurns, patch semantics, and terminal immutability", () => {
+  const persistence = new SqliteCollaborationPersistence();
+  const runId = "run_sqlite_patch_turns";
+
+  const plans: ParticipantAssignmentPlan[] = [
+    {
+      roleId: "architect",
+      participantId: "part_arch_1",
+      sequenceIndex: 0,
+      adapterId: "acp:claude",
+      role: {
+        id: "architect",
+        name: "Architect",
+        description: "Desc",
+        systemInstructions: "Instructions",
+      },
+      config: { adapterType: "acp" },
+    },
+  ];
+
+  const initialParticipants: Record<string, ParticipantRecord> = {
+    part_arch_1: {
+      id: "part_arch_1",
+      roleId: "architect",
+      adapterId: "acp:claude",
+      status: "idle",
+      turnsExecuted: 0,
+      consecutiveFailures: 0,
+      createdAt: "2026-09-17T00:00:00Z",
+    },
+  };
+
+  persistence.createInitialRun(
+    {
+      id: runId,
+      sessionId: "ses_p4_durability",
+      objective: "Test getTurns and patch semantics",
+      status: "running",
+      round: 0,
+      budget: defaultBudget,
+      policy: defaultPolicy,
+      participantIds: ["part_arch_1"],
+      participantsById: initialParticipants,
+      turnHistory: [],
+      createdAt: "2026-09-17T00:00:00Z",
+    },
+    plans,
+  );
+
+  // 1. Test updateParticipantAndRunTransaction setting activeParticipantId
+  persistence.updateParticipantAndRunTransaction({
+    participant: {
+      ...initialParticipants.part_arch_1!,
+      status: "active",
+      lastActiveAt: "2026-09-17T00:00:01Z",
+    },
+    runUpdates: {
+      id: runId,
+      activeParticipantId: "part_arch_1",
+    },
+  });
+
+  const runAfterActive = persistence.getRun(runId);
+  expect(runAfterActive?.activeParticipantId).toBe("part_arch_1");
+
+  // 2. Record turn and clear activeParticipantId with null in runUpdates
+  persistence.recordTurnTransaction({
+    turn: {
+      id: "turn_sq_0",
+      runId,
+      round: 0,
+      turnIndex: 0,
+      participantId: "part_arch_1",
+      roleId: "architect",
+      status: "completed",
+      inputSummary: "Step 0",
+      decision: { type: "message", content: "Architecture plan" },
+      startedAt: "2026-09-17T00:00:01Z",
+      completedAt: "2026-09-17T00:00:02Z",
+    },
+    participant: {
+      ...initialParticipants.part_arch_1!,
+      status: "idle",
+      turnsExecuted: 1,
+      consecutiveFailures: 0,
+      lastActiveAt: "2026-09-17T00:00:02Z",
+    },
+    runUpdates: {
+      id: runId,
+      activeParticipantId: null,
+    },
+  });
+
+  const runAfterTurn0 = persistence.getRun(runId);
+  expect(runAfterTurn0?.activeParticipantId).toBeUndefined();
+
+  // 3. Record turn 1 and finalize
+  persistence.recordTurnTransaction({
+    turn: {
+      id: "turn_sq_1",
+      runId,
+      round: 0,
+      turnIndex: 1,
+      participantId: "part_arch_1",
+      roleId: "architect",
+      status: "completed",
+      inputSummary: "Step 1",
+      decision: { type: "done", summary: "Completed plan" },
+      startedAt: "2026-09-17T00:00:03Z",
+      completedAt: "2026-09-17T00:00:04Z",
+    },
+    participant: {
+      ...initialParticipants.part_arch_1!,
+      status: "idle",
+      turnsExecuted: 2,
+      consecutiveFailures: 0,
+      lastActiveAt: "2026-09-17T00:00:04Z",
+    },
+    runUpdates: {
+      id: runId,
+      status: "completed",
+      finalSummary: "Completed plan",
+      completedAt: "2026-09-17T00:00:04Z",
+      activeParticipantId: null,
+    },
+  });
+
+  // 4. Verify getTurns returns turns ordered by turnIndex
+  const turns = persistence.getTurns(runId);
+  expect(turns).toHaveLength(2);
+  expect(turns[0]?.id).toBe("turn_sq_0");
+  expect(turns[0]?.turnIndex).toBe(0);
+  expect(turns[1]?.id).toBe("turn_sq_1");
+  expect(turns[1]?.turnIndex).toBe(1);
+
+  // 5. Verify terminal immutability via finalizeRun
+  expect(() => {
+    persistence.finalizeRun(runId, {
+      status: "failed",
+      finalSummary: "Attempted override",
+    });
+  }).toThrow(BridgeError);
+});
+

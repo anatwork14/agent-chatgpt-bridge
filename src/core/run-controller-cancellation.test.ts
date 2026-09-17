@@ -19,6 +19,7 @@ import { createParticipantAssignmentPlans, createInitialParticipantRecords } fro
 import { BridgeError } from "./errors";
 import { initDatabase, closeDatabase } from "../persistence/database";
 import { SqliteCollaborationPersistence } from "../persistence/sqlite-collaboration-persistence";
+import { InMemoryRoleBasedRunPersistence } from "./collaboration-persistence";
 
 class FakeRunStore {
   private readonly runs = new Map<string, any>();
@@ -129,6 +130,7 @@ describe("P4.5 Role-Based Run Cancellation and Failure Propagation", () => {
       sessionManager as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     let runABlockedResolve: () => void;
@@ -209,6 +211,7 @@ describe("P4.5 Role-Based Run Cancellation and Failure Propagation", () => {
       sessionManager as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     let nextCallCount = 0;
@@ -270,6 +273,7 @@ describe("P4.5 Role-Based Run Cancellation and Failure Propagation", () => {
       sessionManager as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     let architectTurnStartedResolve: () => void;
@@ -324,6 +328,7 @@ describe("P4.5 Role-Based Run Cancellation and Failure Propagation", () => {
       sessionManager as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     const configA: CollaborationConfig = {
@@ -390,6 +395,7 @@ describe("P4.5 Role-Based Run Cancellation and Failure Propagation", () => {
       sessionManager as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     let turnStartedResolve: () => void;
@@ -430,6 +436,7 @@ describe("P4.5 Role-Based Run Cancellation and Failure Propagation", () => {
       sessionManager as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     let turnStartedResolve: () => void;
@@ -471,6 +478,7 @@ describe("P4.5 Role-Based Run Cancellation and Failure Propagation", () => {
       sessionManager as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     let nextAttempts = 0;
@@ -515,6 +523,7 @@ describe("P4.5 Role-Based Run Cancellation and Failure Propagation", () => {
       sessionManager as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     let adapter1Closed = false;
@@ -574,6 +583,7 @@ describe("P4.5 Role-Based Run Cancellation and Failure Propagation", () => {
       sessionManager as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     let attempts = 0;
@@ -612,6 +622,7 @@ describe("P4.5 Role-Based Run Cancellation and Failure Propagation", () => {
       sessionManager as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     let attempts = 0;
@@ -647,6 +658,7 @@ describe("P4.5 Role-Based Run Cancellation and Failure Propagation", () => {
       sessionManager as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     let attempts = 0;
@@ -719,9 +731,7 @@ describe("P4.5 Role-Based Run Cancellation and Failure Propagation", () => {
 
       const prepared = buildPrepared(config, registry, { architect: adapter });
 
-      const result = await controller.executeRoleBasedRun("ses_sqlite_test", config, prepared, {
-        persistence,
-      });
+      const result = await controller.executeRoleBasedRun("ses_sqlite_test", config, prepared);
 
       expect(result.run.status).toBe("completed");
 
@@ -749,6 +759,7 @@ describe("P4.5 Role-Based Run Cancellation and Failure Propagation", () => {
       sessionManager as any,
       new FakeAuditStore() as any,
       () => { throw new Error("not called"); },
+      new InMemoryRoleBasedRunPersistence(),
     );
 
     let run1StartedResolve: () => void;
@@ -804,5 +815,274 @@ describe("P4.5 Role-Based Run Cancellation and Failure Propagation", () => {
 
     expect(res1.run.status).toBe("cancelled");
     expect(res2.run.status).toBe("cancelled");
+  });
+
+  it("blocker #4: whole-run cancellation leaves pending participants pending, active participant cancelled", async () => {
+    const sessionManager = new FakeSessionManager();
+    const persistence = new InMemoryRoleBasedRunPersistence();
+    const controller = new RunController(
+      new FakeRunStore() as any,
+      sessionManager as any,
+      new FakeAuditStore() as any,
+      () => { throw new Error("not called"); },
+      persistence,
+    );
+
+    let architectStartedResolve: () => void;
+    const architectStarted = new Promise<void>(resolve => { architectStartedResolve = resolve; });
+
+    const config: CollaborationConfig = {
+      objective: "Test pending participant preservation on run cancel",
+      roles: {
+        architect: { adapterType: "acp:claude" },
+        implementer: { adapterType: "acp:antigravity" },
+        reviewer: { adapterType: "acp:claude" },
+      },
+      policy: {
+        roleSequence: ["architect", "implementer", "reviewer"],
+        loopMode: "once",
+        terminalRoles: ["reviewer"],
+      },
+    };
+
+    const prepared = buildPrepared(config, registry, {
+      architect: new TrackedMockAdapter({
+        onNext: async (_, ctx) => {
+          architectStartedResolve();
+          return new Promise<AgentDecision>((_, reject) => {
+            ctx.signal?.addEventListener("abort", () => {
+              reject(new DOMException("Cancelled", "AbortError"));
+            });
+          });
+        },
+      }),
+    });
+
+    const run = await controller.startRoleBasedRun("ses_test", config, prepared);
+    const archPartId = prepared.plans.find(p => p.roleId === "architect")!.participantId;
+    const implPartId = prepared.plans.find(p => p.roleId === "implementer")!.participantId;
+    const revPartId = prepared.plans.find(p => p.roleId === "reviewer")!.participantId;
+
+    await architectStarted;
+    await controller.cancelRoleBasedRun(run.id);
+
+    const result = await controller.waitForRoleBasedRun(run.id);
+    expect(result.run.status).toBe("cancelled");
+    expect(result.run.activeParticipantId).toBeUndefined();
+
+    // Active participant became cancelled
+    expect(result.run.participantsById[archPartId]?.status).toBe("cancelled");
+    // Subsequent participants remained pending (never activated)
+    expect(result.run.participantsById[implPartId]?.status).toBe("pending");
+    expect(result.run.participantsById[revPartId]?.status).toBe("pending");
+
+    // The active turn was cancelled
+    expect(result.turns.length).toBe(1);
+    expect(result.turns[0]?.status).toBe("cancelled");
+  });
+
+  it("blocker #5: cancelling required idle participant marks target cancelled, active participant idle", async () => {
+    const sessionManager = new FakeSessionManager();
+    const persistence = new InMemoryRoleBasedRunPersistence();
+    const controller = new RunController(
+      new FakeRunStore() as any,
+      sessionManager as any,
+      new FakeAuditStore() as any,
+      () => { throw new Error("not called"); },
+      persistence,
+    );
+
+    let architectStartedResolve: () => void;
+    const architectStarted = new Promise<void>(resolve => { architectStartedResolve = resolve; });
+
+    const config: CollaborationConfig = {
+      objective: "Test active transition to idle on non-active cancel",
+      roles: {
+        architect: { adapterType: "acp:claude" },
+        implementer: { adapterType: "acp:antigravity" },
+      },
+      policy: {
+        roleSequence: ["architect", "implementer"],
+        loopMode: "once",
+        terminalRoles: ["implementer"],
+      },
+    };
+
+    const prepared = buildPrepared(config, registry, {
+      architect: new TrackedMockAdapter({
+        onNext: async (_, ctx) => {
+          architectStartedResolve();
+          return new Promise<AgentDecision>((_, reject) => {
+            ctx.signal?.addEventListener("abort", () => {
+              reject(new DOMException("Interrupted", "AbortError"));
+            });
+          });
+        },
+      }),
+    });
+
+    const run = await controller.startRoleBasedRun("ses_test", config, prepared);
+    const archPartId = prepared.plans.find(p => p.roleId === "architect")!.participantId;
+    const implPartId = prepared.plans.find(p => p.roleId === "implementer")!.participantId;
+
+    await architectStarted;
+    // Cancel the IDLE implementer while architect is active
+    await controller.cancelRoleParticipant(run.id, implPartId);
+
+    const result = await controller.waitForRoleBasedRun(run.id);
+    expect(result.run.status).toBe("failed");
+    expect(result.run.activeParticipantId).toBeUndefined();
+
+    // Target participant marked cancelled
+    expect(result.run.participantsById[implPartId]?.status).toBe("cancelled");
+    // Interrupted active participant reset to idle (NOT cancelled or active)
+    expect(result.run.participantsById[archPartId]?.status).toBe("idle");
+  });
+
+  it("blocker #6: turnsExecuted only increments on successful completed turns (message, done, pause)", async () => {
+    const sessionManager = new FakeSessionManager();
+    const persistence = new InMemoryRoleBasedRunPersistence();
+    const controller = new RunController(
+      new FakeRunStore() as any,
+      sessionManager as any,
+      new FakeAuditStore() as any,
+      () => { throw new Error("not called"); },
+      persistence,
+    );
+
+    let attempts = 0;
+    const adapter = new TrackedMockAdapter({
+      id: "architect",
+      onNext: async () => {
+        attempts++;
+        if (attempts === 1) {
+          // Attempt 1: retryable error decision - MUST NOT increment turnsExecuted
+          return { type: "error", message: "Transient glitch", retryable: true };
+        }
+        // Attempt 2: done decision - MUST increment turnsExecuted
+        return { type: "done", summary: "Finished design" };
+      },
+    });
+
+    const config: CollaborationConfig = {
+      objective: "Test turnsExecuted invariant",
+      budget: { maxRetriesPerParticipant: 2 },
+      roles: { architect: { adapterType: "acp:claude" } },
+      policy: { roleSequence: ["architect"], loopMode: "once", terminalRoles: ["architect"] },
+    };
+
+    const prepared = buildPrepared(config, registry, { architect: adapter });
+    const result = await controller.executeRoleBasedRun("ses_test", config, prepared);
+
+    expect(result.run.status).toBe("completed");
+    const partId = prepared.plans[0]!.participantId;
+    // Despite 2 turn records (1 failed, 1 completed), turnsExecuted MUST be exactly 1!
+    expect(result.turns).toHaveLength(2);
+    expect(result.run.participantsById[partId]?.turnsExecuted).toBe(1);
+  });
+
+  it("blocker #7: paused is non-terminal / resumable; completedAt remains undefined", async () => {
+    const sessionManager = new FakeSessionManager();
+    const persistence = new InMemoryRoleBasedRunPersistence();
+    const controller = new RunController(
+      new FakeRunStore() as any,
+      sessionManager as any,
+      new FakeAuditStore() as any,
+      () => { throw new Error("not called"); },
+      persistence,
+    );
+
+    const adapter = new TrackedMockAdapter({
+      id: "architect",
+      onNext: () => ({ type: "pause", reason: "Awaiting human-in-the-loop review" }),
+    });
+
+    const config: CollaborationConfig = {
+      objective: "Test pause behavior",
+      roles: { architect: { adapterType: "acp:claude" } },
+      policy: { roleSequence: ["architect"], loopMode: "once", terminalRoles: ["architect"] },
+    };
+
+    const prepared = buildPrepared(config, registry, { architect: adapter });
+    const result = await controller.executeRoleBasedRun("ses_test", config, prepared);
+
+    expect(result.run.status).toBe("paused");
+    expect(result.run.finalSummary).toBe("Awaiting human-in-the-loop review");
+    expect(result.run.completedAt).toBeUndefined();
+    expect(result.run.activeParticipantId).toBeUndefined();
+    const partId = prepared.plans[0]!.participantId;
+    expect(result.run.participantsById[partId]?.status).toBe("idle");
+    expect(result.run.participantsById[partId]?.turnsExecuted).toBe(1);
+  });
+
+  it("blocker #8: missing rolePersistence on RunController throws role_persistence_unavailable", async () => {
+    const sessionManager = new FakeSessionManager();
+    // Intentionally omit rolePersistence
+    const controller = new RunController(
+      new FakeRunStore() as any,
+      sessionManager as any,
+      new FakeAuditStore() as any,
+      () => { throw new Error("not called"); },
+    );
+
+    const config: CollaborationConfig = {
+      objective: "Test persistence requirement",
+      roles: { architect: { adapterType: "acp:claude" } },
+      policy: { roleSequence: ["architect"], loopMode: "once", terminalRoles: ["architect"] },
+    };
+    const prepared = buildPrepared(config, registry, {});
+
+    try {
+      await controller.startRoleBasedRun("ses_test", config, prepared);
+      expect.unreachable("startRoleBasedRun should have thrown");
+    } catch (err: any) {
+      expect(err).toBeInstanceOf(BridgeError);
+      expect(err.code).toBe("role_persistence_unavailable");
+    }
+
+    try {
+      await controller.executeRoleBasedRun("ses_test", config, prepared);
+      expect.unreachable("executeRoleBasedRun should have thrown");
+    } catch (err: any) {
+      expect(err).toBeInstanceOf(BridgeError);
+      expect(err.code).toBe("role_persistence_unavailable");
+    }
+  });
+
+  it("blocker #9: cannot cancel an already completed run; returns false and leaves status intact", async () => {
+    const sessionManager = new FakeSessionManager();
+    const persistence = new InMemoryRoleBasedRunPersistence();
+    const controller = new RunController(
+      new FakeRunStore() as any,
+      sessionManager as any,
+      new FakeAuditStore() as any,
+      () => { throw new Error("not called"); },
+      persistence,
+    );
+
+    const adapter = new TrackedMockAdapter({
+      id: "architect",
+      onNext: () => ({ type: "done", summary: "Instant complete" }),
+    });
+
+    const config: CollaborationConfig = {
+      objective: "Test cancel completed",
+      roles: { architect: { adapterType: "acp:claude" } },
+      policy: { roleSequence: ["architect"], loopMode: "once", terminalRoles: ["architect"] },
+    };
+
+    const prepared = buildPrepared(config, registry, { architect: adapter });
+    const run = await controller.startRoleBasedRun("ses_test", config, prepared);
+    const result = await controller.waitForRoleBasedRun(run.id);
+
+    expect(result.run.status).toBe("completed");
+
+    // Attempt to cancel already-completed run
+    const cancelResult = await controller.cancelRoleBasedRun(run.id);
+    expect(cancelResult).toBe(false);
+
+    // Status remains completed
+    const finalRun = persistence.getRun(run.id);
+    expect(finalRun?.status).toBe("completed");
   });
 });

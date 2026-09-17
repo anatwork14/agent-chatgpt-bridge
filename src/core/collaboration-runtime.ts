@@ -17,7 +17,7 @@ export interface ParticipantRuntime {
   readonly participantId: string;
   readonly roleId: RoleId;
   readonly adapterId: string;
-  readonly adapter: ExternalAgentAdapter;
+  adapter: ExternalAgentAdapter;
   readonly abortController?: AbortController;
   readonly recreateAdapter?: () => ExternalAgentAdapter;
 }
@@ -64,5 +64,4 @@ export interface RoleBasedExecutionOptions {
   readonly turnIdFactory?: () => string;
   readonly runIdFactory?: () => string;
   readonly messageIdFactory?: () => string;
-  readonly persistence?: RoleBasedRunPersistence;
 }

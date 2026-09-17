@@ -270,6 +270,35 @@ describe("P4.2 Participant Factory & Adapter Binding", () => {
       const adapter = createParticipantAdapter(config);
       expect((adapter as any).options.permissionMode).toBe("deny");
     });
+
+    it("bindParticipant produces runtime with mutable adapter allowing recreation without throwing in strict mode", () => {
+      const registry = createStandardRegistry();
+      const config: CollaborationConfig = {
+        objective: "Adapter recreation test",
+        policy: {
+          roleSequence: ["architect"],
+          loopMode: "once",
+          terminalRoles: ["architect"],
+        },
+        roles: {
+          architect: { adapterType: "acp:claude" },
+        },
+      };
+
+      const plans = createParticipantAssignmentPlans(config, registry);
+      const runtime = bindParticipant(plans[0]!);
+
+      const initialAdapter = runtime.adapter;
+      expect(runtime.recreateAdapter).toBeDefined();
+
+      // In strict mode / sealed object, assigning to runtime.adapter must succeed without error
+      expect(() => {
+        runtime.adapter = runtime.recreateAdapter!();
+      }).not.toThrow();
+
+      expect(runtime.adapter).not.toBe(initialAdapter);
+      expect(runtime.adapter).toBeInstanceOf(AcpAgentAdapter);
+    });
   });
 
   describe("Batch Atomic Preparation (prepareParticipants)", () => {

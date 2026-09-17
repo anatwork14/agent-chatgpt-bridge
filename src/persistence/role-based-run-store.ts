@@ -4,7 +4,9 @@ import type {
   RoleBasedRunBudget,
   RunPolicy,
   ParticipantRecord,
+  RoleBasedRunPatch,
 } from "../core/collaboration-domain";
+import { isRoleBasedRunTerminalStatus } from "../core/collaboration-domain";
 import { CollaborationParticipantStore } from "./collaboration-participant-store";
 import { CollaborationTurnStore } from "./collaboration-turn-store";
 import { BridgeError } from "../core/errors";
@@ -74,36 +76,54 @@ export class RoleBasedRunStore {
     return rows.map((row) => this.reconstructRun(row));
   }
 
-  update(id: string, updates: Partial<RoleBasedCollaborationRun>): void {
+  update(id: string, updates: RoleBasedRunPatch): void {
     const db = getDatabase();
     const existing = db.query("SELECT * FROM role_based_runs WHERE id = ?").get(id) as any;
     if (!existing) {
       throw new BridgeError("not_found", `Role-based run '${id}' not found`, false);
     }
 
-    const merged = {
-      status: updates.status ?? existing.status,
-      round: updates.round !== undefined ? updates.round : existing.round,
-      activeParticipantId:
-        updates.activeParticipantId !== undefined
-          ? updates.activeParticipantId
-          : existing.active_participant_id,
-      finalSummary:
-        updates.finalSummary !== undefined ? updates.finalSummary : existing.final_summary,
-      completedAt:
-        updates.completedAt !== undefined ? updates.completedAt : existing.completed_at,
-    };
+    if (isRoleBasedRunTerminalStatus(existing.status)) {
+      if (updates.status !== undefined && updates.status !== existing.status) {
+        throw new BridgeError(
+          "invalid_state_transition",
+          `Cannot transition role-based run from terminal status '${existing.status}' to '${updates.status}'`,
+          false,
+        );
+      }
+    }
+
+    const mergedStatus = updates.status ?? existing.status;
+    const mergedRound = updates.round !== undefined ? updates.round : existing.round;
+
+    let mergedActiveParticipantId: string | null = existing.active_participant_id;
+    if ("activeParticipantId" in updates) {
+      mergedActiveParticipantId =
+        updates.activeParticipantId === null ? null : (updates.activeParticipantId ?? null);
+    }
+
+    let mergedFinalSummary: string | null = existing.final_summary;
+    if ("finalSummary" in updates) {
+      mergedFinalSummary =
+        updates.finalSummary === null ? null : (updates.finalSummary ?? null);
+    }
+
+    let mergedCompletedAt: string | null = existing.completed_at;
+    if ("completedAt" in updates) {
+      mergedCompletedAt =
+        updates.completedAt === null ? null : (updates.completedAt ?? null);
+    }
 
     db.prepare(`
       UPDATE role_based_runs SET
         status = ?, round = ?, active_participant_id = ?, final_summary = ?, completed_at = ?
       WHERE id = ?
     `).run(
-      merged.status,
-      merged.round,
-      merged.activeParticipantId || null,
-      merged.finalSummary || null,
-      merged.completedAt || null,
+      mergedStatus,
+      mergedRound,
+      mergedActiveParticipantId,
+      mergedFinalSummary,
+      mergedCompletedAt,
       id,
     );
   }

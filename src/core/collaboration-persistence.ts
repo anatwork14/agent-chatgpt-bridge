@@ -6,6 +6,11 @@ import type {
   ParticipantStatus,
   RoleBasedCollaborationRun,
   CollaborationTurnRecord,
+  RoleBasedRunPatch,
+} from "./collaboration-domain";
+import {
+  applyRoleBasedRunPatch,
+  isRoleBasedRunTerminalStatus,
 } from "./collaboration-domain";
 import type { ParticipantAssignmentPlan } from "./participant-assignment";
 import type { CollaborationMessageRecord } from "./collaboration-transcript";
@@ -77,17 +82,19 @@ export interface RoleBasedRunPersistence {
     readonly turn: CollaborationTurnRecord;
     readonly message?: CollaborationMessageRecord;
     readonly participant: ParticipantRecord;
-    readonly runUpdates: Partial<RoleBasedCollaborationRun> & { readonly id: string };
+    readonly runUpdates: RoleBasedRunPatch & { readonly id: string };
   }): void;
 
   updateParticipantAndRunTransaction(params: {
     readonly participant: ParticipantRecord;
-    readonly runUpdates: Partial<RoleBasedCollaborationRun> & { readonly id: string };
+    readonly runUpdates: RoleBasedRunPatch & { readonly id: string };
   }): void;
 
-  finalizeRun(id: string, updates: Partial<RoleBasedCollaborationRun>): void;
+  finalizeRun(id: string, updates: RoleBasedRunPatch): void;
 
   getRun(id: string): RoleBasedCollaborationRun | null;
+
+  getTurns(runId: string): CollaborationTurnRecord[];
 
   listRunsBySession(sessionId: string): RoleBasedCollaborationRun[];
 
@@ -148,11 +155,21 @@ export class InMemoryRoleBasedRunPersistence implements RoleBasedRunPersistence 
     readonly turn: CollaborationTurnRecord;
     readonly message?: CollaborationMessageRecord;
     readonly participant: ParticipantRecord;
-    readonly runUpdates: Partial<RoleBasedCollaborationRun> & { readonly id: string };
+    readonly runUpdates: RoleBasedRunPatch & { readonly id: string };
   }): void {
     const run = this.runs.get(params.runUpdates.id);
     if (!run) {
       throw new BridgeError("not_found", `Role-based run '${params.runUpdates.id}' not found`, false);
+    }
+
+    if (isRoleBasedRunTerminalStatus(run.status)) {
+      if (params.runUpdates.status !== undefined && params.runUpdates.status !== run.status) {
+        throw new BridgeError(
+          "invalid_state_transition",
+          `Cannot transition role-based run from terminal status '${run.status}' to '${params.runUpdates.status}'`,
+          false,
+        );
+      }
     }
 
     const turns = this.turnsByRun.get(run.id) ?? [];
@@ -204,10 +221,10 @@ export class InMemoryRoleBasedRunPersistence implements RoleBasedRunPersistence 
     };
 
     const updatedTurnHistory = [...run.turnHistory, params.turn.id];
+    const patchedRun = applyRoleBasedRunPatch(run, params.runUpdates);
 
     this.runs.set(run.id, {
-      ...run,
-      ...params.runUpdates,
+      ...patchedRun,
       participantsById: updatedParticipantsById,
       turnHistory: updatedTurnHistory,
     });
@@ -215,12 +232,23 @@ export class InMemoryRoleBasedRunPersistence implements RoleBasedRunPersistence 
 
   updateParticipantAndRunTransaction(params: {
     readonly participant: ParticipantRecord;
-    readonly runUpdates: Partial<RoleBasedCollaborationRun> & { readonly id: string };
+    readonly runUpdates: RoleBasedRunPatch & { readonly id: string };
   }): void {
     const run = this.runs.get(params.runUpdates.id);
     if (!run) {
       throw new BridgeError("not_found", `Role-based run '${params.runUpdates.id}' not found`, false);
     }
+
+    if (isRoleBasedRunTerminalStatus(run.status)) {
+      if (params.runUpdates.status !== undefined && params.runUpdates.status !== run.status) {
+        throw new BridgeError(
+          "invalid_state_transition",
+          `Cannot transition role-based run from terminal status '${run.status}' to '${params.runUpdates.status}'`,
+          false,
+        );
+      }
+    }
+
     const partMap = this.participantsByRun.get(run.id);
     if (!partMap) {
       throw new BridgeError("not_found", `Participants for run '${run.id}' not found`, false);
@@ -243,25 +271,43 @@ export class InMemoryRoleBasedRunPersistence implements RoleBasedRunPersistence 
       [params.participant.id]: { ...params.participant },
     };
 
+    const patchedRun = applyRoleBasedRunPatch(run, params.runUpdates);
+
     this.runs.set(run.id, {
-      ...run,
-      ...params.runUpdates,
+      ...patchedRun,
       participantsById: updatedParticipantsById,
     });
   }
 
-  finalizeRun(id: string, updates: Partial<RoleBasedCollaborationRun>): void {
+  finalizeRun(id: string, updates: RoleBasedRunPatch): void {
     const run = this.runs.get(id);
     if (!run) {
       throw new BridgeError("not_found", `Role-based run '${id}' not found`, false);
     }
-    this.runs.set(id, { ...run, ...updates });
+
+    if (isRoleBasedRunTerminalStatus(run.status)) {
+      if (updates.status !== undefined && updates.status !== run.status) {
+        throw new BridgeError(
+          "invalid_state_transition",
+          `Cannot transition role-based run from terminal status '${run.status}' to '${updates.status}'`,
+          false,
+        );
+      }
+    }
+
+    const patchedRun = applyRoleBasedRunPatch(run, updates);
+    this.runs.set(id, patchedRun);
   }
 
   getRun(id: string): RoleBasedCollaborationRun | null {
     const run = this.runs.get(id);
     if (!run) return null;
     return { ...run };
+  }
+
+  getTurns(runId: string): CollaborationTurnRecord[] {
+    const turns = this.turnsByRun.get(runId) ?? [];
+    return turns.map((t) => ({ ...t }));
   }
 
   listRunsBySession(sessionId: string): RoleBasedCollaborationRun[] {
