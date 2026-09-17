@@ -68,7 +68,7 @@ To eliminate architectural ambiguity across the codebase, documentation, and API
 
 ## 3. Architecture & Data Model
 
-### 3.1 Domain Types (`src/core/domain.ts` Extensions)
+### 3.1 Domain Types (`src/core/collaboration-domain.ts`)
 
 The core domain model builds cleanly upon existing P1–P3 abstractions without breaking single-agent backward compatibility.
 
@@ -702,7 +702,7 @@ A comparison of proposed P4 abstractions against existing implementations in `sr
 Each slice represents an independently testable, atomic unit of work:
 
 - **Slice P4.0: Core Types, Domain Interfaces & Invariants**
-  - Define `RoleId`, `RoleDefinition`, `Participant`, `CollaborationRunBudget`, and `CollaborationTurn` in `src/core/domain.ts`.
+  - Define `RoleId`, `RoleDefinition`, `ParticipantRecord`, `RoleBasedRunBudget`, and `CollaborationTurnRecord` in `src/core/collaboration-domain.ts`.
   - Add type assertions and validation helpers.
   - Implement deterministic unit tests verifying budget invariants and constraint validators.
 
@@ -791,9 +791,9 @@ The P4 implementation suite will enforce the following deterministic test cases:
 - [x] Backward compatibility with single-agent `CollaborationRun` preserved
 
 ### P4.1 — Role Registry
-- [ ] `RoleRegistry` class
-- [ ] Built-in role definitions registered
-- [ ] Unit tests for role lookup and immutability
+- [x] `RoleRegistry` class
+- [x] Built-in role definitions registered
+- [x] Unit tests for role lookup and immutability
 
 ### P4.2 — Explicit Participant Assignment
 - [ ] Configuration loader and parser
