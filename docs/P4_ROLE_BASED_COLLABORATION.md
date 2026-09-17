@@ -803,9 +803,13 @@ The P4 implementation suite will enforce the following deterministic test cases:
 - [x] Deterministic tests
 
 ### P4.3 — Sequential Role Workflow
-- [ ] Multi-participant sequential turn loop in `RunController`
-- [ ] Hub-and-spoke handoff logic
-- [ ] Deterministic multi-participant turn tests
+- [x] sequential multi-participant execution
+- [x] hub-and-spoke role handoff
+- [x] role-aware AgentTurnInput
+- [x] terminal-role authority
+- [x] bounded turns / wall-clock behavior
+- [x] deterministic adapter cleanup
+- [x] deterministic orchestration tests
 
 ### P4.4 — Canonical Transcript Integration
 - [ ] SQLite migration v2 (`participants`, `collaboration_turns`)

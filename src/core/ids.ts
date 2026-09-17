@@ -20,3 +20,7 @@ export function generateRunId(): string {
 export function generateParticipantId(): string {
   return generateId("part");
 }
+
+export function generateCollaborationTurnId(): string {
+  return generateId("cturn");
+}

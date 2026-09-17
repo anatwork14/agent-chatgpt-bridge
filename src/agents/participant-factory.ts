@@ -56,17 +56,13 @@ export class ParticipantPreflightError extends BridgeError {
   }
 }
 
-/**
- * Memory-only runtime binding for an active participant turn.
- * NEVER persisted or serialized into ParticipantRecord or SQLite.
- */
-export interface ParticipantRuntime {
-  readonly participantId: string;
-  readonly roleId: RoleId;
-  readonly adapterId: string;
-  readonly adapter: ExternalAgentAdapter;
-  readonly abortController?: AbortController;
-}
+import type {
+  ParticipantRuntime,
+  PreparedRoleParticipants,
+} from "../core/collaboration-runtime";
+
+export type { ParticipantRuntime, PreparedRoleParticipants };
+export type PreparedParticipants = PreparedRoleParticipants;
 
 export type ParticipantAdapterFactory = (config: ParticipantConfig) => ExternalAgentAdapter;
 
@@ -75,12 +71,6 @@ export interface PrepareParticipantsOptions
     CreateInitialRecordsOptions {
   readonly locator?: ExecutableLocator;
   readonly factory?: ParticipantAdapterFactory;
-}
-
-export interface PreparedParticipants {
-  readonly plans: readonly ParticipantAssignmentPlan[];
-  readonly runtimes: readonly ParticipantRuntime[];
-  readonly records: InitialParticipantRecords;
 }
 
 /**

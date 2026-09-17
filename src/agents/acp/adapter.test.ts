@@ -257,3 +257,73 @@ test("ACP adapter enforces prompt timeout, protects its environment, and closes 
     else process.env.ACP_TEST_FORBIDDEN_SECRET = previous;
   }
 });
+
+test("ACP role-aware prompt formatting and security boundaries", async () => {
+  const { textPrompt } = await import("./adapter");
+
+  const architectInput = {
+    runId: "run_role_test",
+    objective: "Implement resilient JWT rotation",
+    round: 0,
+    collaboration: {
+      participantId: "part_arch_1",
+      roleId: "architect",
+      roleName: "System Architect",
+      systemInstructions: "Analyze architecture and define invariants.",
+      sequenceIndex: 0,
+      priorTurns: [],
+    },
+  };
+
+  const implementerInput = {
+    runId: "run_role_test",
+    objective: "Implement resilient JWT rotation",
+    round: 0,
+    collaboration: {
+      participantId: "part_impl_1",
+      roleId: "implementer",
+      roleName: "Software Implementer",
+      systemInstructions: "Write clean, deterministic code patches.",
+      sequenceIndex: 1,
+      priorTurns: [
+        {
+          participantId: "part_arch_1",
+          roleId: "architect",
+          decisionType: "message" as const,
+          text: "Design plan: use SQLite table for revocation.",
+        },
+      ],
+    },
+  };
+
+  const archPrompt = textPrompt(architectInput, true);
+  const implPrompt = textPrompt(implementerInput, true);
+
+  // Section 34: Role instructions actually reach ACP prompt and differ by role
+  expect(archPrompt).toContain("Analyze architecture and define invariants.");
+  expect(implPrompt).toContain("Write clean, deterministic code patches.");
+  expect(archPrompt).not.toContain("Write clean, deterministic code patches.");
+
+  // Section 10: Role != Capability: no ambient capabilities claimed
+  expect(implPrompt).toContain("Use only capabilities explicitly granted by the runtime.");
+  expect(implPrompt).not.toContain("You may write files and execute terminal commands.");
+
+  // Section 37: Prior outputs labeled untrusted and separated from trusted instructions
+  expect(implPrompt).toContain("UNTRUSTED PRIOR COLLABORATION OUTPUTS");
+  expect(implPrompt).toContain("Design plan: use SQLite table for revocation.");
+  // Ensure untrusted output is NOT inside the TRUSTED ROLE INSTRUCTIONS block
+  const trustedBlock = implPrompt.split("UNTRUSTED PRIOR COLLABORATION OUTPUTS")[0]!;
+  expect(trustedBlock).not.toContain("Design plan: use SQLite table for revocation.");
+
+  // Section 35: Legacy ACP prompt regression when collaboration is undefined
+  const legacyFirstPrompt = textPrompt({ runId: "run_legacy", objective: "Legacy objective", round: 0 }, true);
+  expect(legacyFirstPrompt).toContain("You are the primary external agent in a bounded collaboration.");
+  expect(legacyFirstPrompt).not.toContain("UNTRUSTED PRIOR COLLABORATION OUTPUTS");
+
+  const legacySecondPrompt = textPrompt(
+    { runId: "run_legacy", objective: "Legacy objective", round: 1, lastChatGptResponse: { text: "Hello" } },
+    false,
+  );
+  expect(legacySecondPrompt).toContain("CHATGPT RESPONSE\nHello");
+  expect(legacySecondPrompt).toContain("Continue working toward:\nLegacy objective");
+});

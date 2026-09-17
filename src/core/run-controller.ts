@@ -5,12 +5,28 @@ import type {
   AgentTurnInput,
   BridgeMessage,
   ExternalAgentAdapterConfig,
+  PriorCollaborationTurn,
 } from "./domain";
-import { generateId, generateRunId } from "./ids";
+import { generateId, generateRunId, generateCollaborationTurnId } from "./ids";
 import type { RunStore } from "../persistence/run-store";
 import type { AuditStore } from "../persistence/audit-store";
 import type { SessionManager } from "./session-manager";
 import { BridgeError } from "./errors";
+import {
+  type CollaborationConfig,
+  type RoleBasedCollaborationRun,
+  type CollaborationTurnRecord,
+  type RoleBasedRunBudget,
+  type RoleBasedCollaborationRunStatus,
+  type ParticipantRecord,
+  P4_DEFAULT_BUDGET,
+} from "./collaboration-domain";
+import type {
+  PreparedRoleParticipants,
+  ParticipantRuntime,
+  RoleBasedExecutionResult,
+  RoleBasedExecutionOptions,
+} from "./collaboration-runtime";
 
 const HARD_MAX_ROUNDS = 100;
 const DEFAULT_BUDGET: CollaborationRun["budget"] = {
@@ -457,6 +473,360 @@ export class RunController {
         }
       }
     }
+  }
+
+  /**
+   * Executes a bounded, sequential multi-participant role-based collaboration run (P4).
+   *
+   * Invariants:
+   * 1. Strict sequential turns (maxParallelTurns = 1; active participant turns <= 1 at all times).
+   * 2. Pure hub-and-spoke coordination through priorTurns context; no direct agent-to-agent meshes.
+   * 3. Lazy participant initialization: initialize() called at most once per participant runtime.
+   * 4. Persistent runtime reuse across rounds for loopMode "repeat_until_done".
+   * 5. Strict terminal authority: only designated policy.terminalRoles can terminate with 'done'.
+   * 6. Hard budget enforcement: maxTurns counts participant turns; maxWallClockMs marks timed_out.
+   * 7. Deterministic cleanup: closes all initialized adapters in reverse initialization order in finally block.
+   */
+  async executeRoleBasedRun(
+    sessionId: string,
+    config: CollaborationConfig,
+    prepared: PreparedRoleParticipants,
+    options?: RoleBasedExecutionOptions,
+  ): Promise<RoleBasedExecutionResult> {
+    const session = await this.sessionManager.get(sessionId);
+    if (session.status === "closed" || session.status === "closing") {
+      throw new BridgeError("session_closed", `Session ${session.id} is closed`, false);
+    }
+
+    const clock = options?.clock ?? (() => new Date().toISOString());
+    const nowFn = options?.now ?? (() => Date.now());
+    const turnIdFactory = options?.turnIdFactory ?? generateCollaborationTurnId;
+    const runIdFactory = options?.runIdFactory ?? generateRunId;
+    const runId = runIdFactory();
+    const nowIso = clock();
+    const startTimestamp = nowFn();
+
+    const budget: RoleBasedRunBudget = {
+      ...P4_DEFAULT_BUDGET,
+      ...(config.budget ?? {}),
+      maxParallelTurns: 1,
+    };
+
+    const plansByRoleId = new Map<string, (typeof prepared.plans)[number]>();
+    for (const plan of prepared.plans) {
+      plansByRoleId.set(plan.roleId, plan);
+    }
+
+    const runtimesByParticipantId = new Map<string, ParticipantRuntime>();
+    for (const runtime of prepared.runtimes) {
+      runtimesByParticipantId.set(runtime.participantId, runtime);
+    }
+
+    const participantsById: Record<string, ParticipantRecord> = { ...prepared.records.participantsById };
+    const participantIds = [...prepared.records.participantIds];
+
+    const initializedParticipants = new Set<string>();
+    const priorTurns: PriorCollaborationTurn[] = [];
+    const turnHistory: string[] = [];
+    const turns: CollaborationTurnRecord[] = [];
+    let runStatus: RoleBasedCollaborationRunStatus = "running";
+    let finalSummary: string | undefined = undefined;
+    let round = 0;
+    let turnIndex = 0;
+
+    try {
+      loop: while (runStatus === "running") {
+        for (let seqIdx = 0; seqIdx < config.policy.roleSequence.length; seqIdx++) {
+          // Check maxTurns budget before turn execution
+          if (turnIndex >= budget.maxTurns) {
+            runStatus = "budget_exhausted";
+            finalSummary = `Exceeded maximum allowed turns (${budget.maxTurns})`;
+            break loop;
+          }
+
+          // Check wall-clock deadline before turn execution
+          const elapsed = nowFn() - startTimestamp;
+          if (elapsed >= budget.maxWallClockMs) {
+            runStatus = "timed_out";
+            finalSummary = `Exceeded maximum wall-clock deadline (${budget.maxWallClockMs} ms)`;
+            break loop;
+          }
+
+          // Check cancellation signal before turn execution
+          if (options?.signal?.aborted) {
+            runStatus = "cancelled";
+            finalSummary = "Collaboration run was cancelled";
+            break loop;
+          }
+
+          const roleId = config.policy.roleSequence[seqIdx]!;
+          const plan = plansByRoleId.get(roleId);
+          if (!plan) {
+            throw new BridgeError("invalid_request", `Missing plan for role '${roleId}'`, false);
+          }
+          const runtime = runtimesByParticipantId.get(plan.participantId);
+          if (!runtime) {
+            throw new BridgeError("invalid_request", `Missing runtime for participant '${plan.participantId}'`, false);
+          }
+
+          // Mark participant active
+          participantsById[runtime.participantId] = {
+            ...participantsById[runtime.participantId]!,
+            status: "active",
+            lastActiveAt: clock(),
+          };
+
+          // Lazy adapter initialization: at most once per participant runtime
+          if (!initializedParticipants.has(runtime.participantId)) {
+            try {
+              await runtime.adapter.initialize?.({
+                runId,
+                objective: config.objective,
+                cwd: plan.config.cwd ?? process.cwd(),
+              });
+              initializedParticipants.add(runtime.participantId);
+            } catch (initErr) {
+              const turnId = turnIdFactory();
+              const turnTime = clock();
+              turns.push({
+                id: turnId,
+                runId,
+                round,
+                turnIndex,
+                participantId: runtime.participantId,
+                roleId: runtime.roleId,
+                status: "failed",
+                inputSummary: `Initialize participant ${runtime.participantId} for role ${runtime.roleId}`,
+                error: {
+                  code: initErr instanceof BridgeError ? initErr.code : "agent_adapter_failed",
+                  message: initErr instanceof Error ? initErr.message : String(initErr),
+                  retryable: retryableError(initErr),
+                },
+                startedAt: turnTime,
+                completedAt: turnTime,
+                durationMs: 0,
+              });
+              turnHistory.push(turnId);
+
+              participantsById[runtime.participantId] = {
+                ...participantsById[runtime.participantId]!,
+                status: "failed",
+                consecutiveFailures: (participantsById[runtime.participantId]?.consecutiveFailures ?? 0) + 1,
+                lastActiveAt: turnTime,
+              };
+
+              runStatus = "failed";
+              finalSummary = initErr instanceof Error ? initErr.message : String(initErr);
+              break loop;
+            }
+          }
+
+          const roleDef = plan.role;
+          const input: AgentTurnInput = {
+            runId,
+            objective: config.objective,
+            round,
+            workspace: {
+              cwd: plan.config.cwd ?? process.cwd(),
+            },
+            collaboration: {
+              participantId: runtime.participantId,
+              roleId: runtime.roleId,
+              roleName: roleDef.name,
+              systemInstructions: roleDef.systemInstructions,
+              sequenceIndex: seqIdx,
+              priorTurns: Object.freeze([...priorTurns]),
+            },
+          };
+
+          const turnId = turnIdFactory();
+          const turnStartedAt = clock();
+          const turnStartMs = nowFn();
+          const remainingMs = budget.maxWallClockMs - (turnStartMs - startTimestamp);
+
+          if (remainingMs <= 0) {
+            runStatus = "timed_out";
+            finalSummary = `Exceeded maximum wall-clock deadline (${budget.maxWallClockMs} ms)`;
+            break loop;
+          }
+
+          let decision: AgentDecision;
+          try {
+            decision = await this.nextAgentDecision(
+              runtime.adapter,
+              input,
+              options?.signal ?? new AbortController().signal,
+              remainingMs,
+            );
+          } catch (turnErr) {
+            const durationMs = nowFn() - turnStartMs;
+            const isAborted = options?.signal?.aborted;
+            const isTimeout =
+              (turnErr instanceof DOMException && turnErr.name === "TimeoutError") ||
+              nowFn() - startTimestamp >= budget.maxWallClockMs;
+
+            const turnStatus = isAborted ? "cancelled" : "failed";
+            turns.push({
+              id: turnId,
+              runId,
+              round,
+              turnIndex,
+              participantId: runtime.participantId,
+              roleId: runtime.roleId,
+              status: turnStatus,
+              inputSummary: `Turn for role ${runtime.roleId}`,
+              error: {
+                code: turnErr instanceof BridgeError ? turnErr.code : (isTimeout ? "agent_adapter_timeout" : "agent_adapter_failed"),
+                message: turnErr instanceof Error ? turnErr.message : String(turnErr),
+                retryable: retryableError(turnErr),
+              },
+              startedAt: turnStartedAt,
+              completedAt: clock(),
+              durationMs,
+            });
+            turnHistory.push(turnId);
+
+            participantsById[runtime.participantId] = {
+              ...participantsById[runtime.participantId]!,
+              status: "failed",
+              consecutiveFailures: (participantsById[runtime.participantId]?.consecutiveFailures ?? 0) + 1,
+              lastActiveAt: clock(),
+            };
+
+            if (isAborted) {
+              runStatus = "cancelled";
+              finalSummary = "Collaboration run was cancelled";
+            } else if (isTimeout) {
+              runStatus = "timed_out";
+              finalSummary = `Exceeded maximum wall-clock deadline (${budget.maxWallClockMs} ms)`;
+            } else {
+              runStatus = "failed";
+              finalSummary = turnErr instanceof Error ? turnErr.message : String(turnErr);
+            }
+            break loop;
+          }
+
+          // Successful turn execution
+          const durationMs = nowFn() - turnStartMs;
+          turnIndex += 1;
+
+          turns.push({
+            id: turnId,
+            runId,
+            round,
+            turnIndex: turnIndex - 1,
+            participantId: runtime.participantId,
+            roleId: runtime.roleId,
+            status: "completed",
+            inputSummary: `Turn for role ${runtime.roleId}`,
+            decision,
+            startedAt: turnStartedAt,
+            completedAt: clock(),
+            durationMs,
+          });
+          turnHistory.push(turnId);
+
+          participantsById[runtime.participantId] = {
+            ...participantsById[runtime.participantId]!,
+            status: "idle",
+            turnsExecuted: (participantsById[runtime.participantId]?.turnsExecuted ?? 0) + 1,
+            consecutiveFailures: 0,
+            lastActiveAt: clock(),
+          };
+
+          // Decision processing
+          if (decision.type === "message") {
+            priorTurns.push({
+              participantId: runtime.participantId,
+              roleId: runtime.roleId,
+              decisionType: "message",
+              text: decision.content,
+            });
+          } else if (decision.type === "done") {
+            const isTerminalRole = config.policy.terminalRoles.includes(runtime.roleId);
+            priorTurns.push({
+              participantId: runtime.participantId,
+              roleId: runtime.roleId,
+              decisionType: "done",
+              text: decision.summary,
+            });
+            if (isTerminalRole) {
+              runStatus = "completed";
+              finalSummary = decision.summary;
+              break loop;
+            }
+            // Non-terminal role finished its subtask; workflow continues!
+          } else if (decision.type === "pause") {
+            runStatus = "paused";
+            finalSummary = decision.reason;
+            break loop;
+          } else if (decision.type === "error") {
+            runStatus = "failed";
+            finalSummary = decision.message;
+            break loop;
+          }
+        }
+
+        // End of sequence pass
+        if (runStatus === "running") {
+          if (config.policy.loopMode === "once") {
+            runStatus = "completed";
+            finalSummary = finalSummary ?? "Role sequence completed.";
+            break loop;
+          } else if (config.policy.loopMode === "repeat_until_done") {
+            round += 1;
+          }
+        }
+      }
+    } finally {
+      // Deterministic cleanup: close initialized adapters in reverse initialization order,
+      // followed by any remaining prepared adapters (at most once per adapter)
+      const closed = new Set<string>();
+      const initializedReverse = [...initializedParticipants].reverse();
+      for (const partId of initializedReverse) {
+        closed.add(partId);
+        const runtime = runtimesByParticipantId.get(partId);
+        try {
+          await runtime?.adapter.close?.();
+        } catch {
+          // Ignore secondary close errors to preserve run result
+        }
+      }
+      for (const runtime of prepared.runtimes) {
+        if (!closed.has(runtime.participantId)) {
+          closed.add(runtime.participantId);
+          try {
+            await runtime.adapter.close?.();
+          } catch {
+            // Ignore secondary close errors to preserve run result
+          }
+        }
+      }
+    }
+
+    const completedAt = clock();
+    const roleBasedRun: RoleBasedCollaborationRun = {
+      id: runId,
+      sessionId,
+      objective: config.objective,
+      status: runStatus,
+      round,
+      budget,
+      policy: config.policy,
+      participantIds,
+      participantsById,
+      activeParticipantId: undefined,
+      turnHistory,
+      createdAt: nowIso,
+      startedAt: nowIso,
+      completedAt,
+      finalSummary,
+    };
+
+    return {
+      run: roleBasedRun,
+      turns,
+    };
   }
 
   getRun(runId: string): CollaborationRun | null {
