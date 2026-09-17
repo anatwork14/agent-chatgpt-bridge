@@ -19,9 +19,6 @@ import { createParticipantAssignmentPlans, createInitialParticipantRecords } fro
 import { BridgeError } from "./errors";
 import { initDatabase, closeDatabase } from "../persistence/database";
 import { SqliteCollaborationPersistence } from "../persistence/sqlite-collaboration-persistence";
-import os from "node:os";
-import path from "node:path";
-import fs from "node:fs";
 
 class FakeRunStore {
   private readonly runs = new Map<string, any>();
@@ -683,12 +680,10 @@ describe("P4.5 Role-Based Run Cancellation and Failure Propagation", () => {
   });
 
   it("SQLite persistence integrity: each failed attempt is durably recorded with unique turn_index", async () => {
-    const dbPath = path.join(os.tmpdir(), `test-p45-cancellation-${Date.now()}.db`);
     closeDatabase();
-    if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
 
     try {
-      const db = initDatabase(dbPath);
+      const db = initDatabase(":memory:");
       db.exec(`
         INSERT INTO sessions (id, provider, model, status, created_at, updated_at)
         VALUES ('ses_sqlite_test', 'chatgpt-web', 'gpt-4', 'active', '2026-09-17T00:00:00Z', '2026-09-17T00:00:00Z');
@@ -744,7 +739,6 @@ describe("P4.5 Role-Based Run Cancellation and Failure Propagation", () => {
       expect(transcript[1]?.content).toBe("Success on second try");
     } finally {
       closeDatabase();
-      if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
     }
   });
 
