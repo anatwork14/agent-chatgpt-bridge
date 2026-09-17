@@ -1,11 +1,11 @@
 blank_issues_enabled: false
 contact_links:
   - name: Troubleshooting guide
-    url: https://github.com/miuuyy/codex-chatgpt-web/blob/main/TROUBLESHOOTING.md
-    about: Resolve common setup, routing, sign-in, model, MCP, rate-limit, image, and streaming failures first.
-  - name: Questions and usage discussions
-    url: https://github.com/miuuyy/codex-chatgpt-web/discussions
-    about: Ask usage questions or discuss workflows that are not confirmed bugs or focused feature requests.
+    url: https://github.com/anatwork14/agent-chatgpt-bridge/blob/main/TROUBLESHOOTING.md
+    about: Resolve common setup, routing, sign-in, model, ACP, MCP, cancellation, and streaming failures first.
+  - name: Project goals and architecture
+    url: https://github.com/anatwork14/agent-chatgpt-bridge/blob/main/GOALS.md
+    about: Check whether a proposal belongs in Agent Bridge, a provider/router, ARC, or CompanyOS.
   - name: Private security report
-    url: https://github.com/miuuyy/codex-chatgpt-web/security/advisories/new
-    about: Report credential exposure, authentication bypass, or arbitrary tool-execution vulnerabilities privately.
+    url: https://github.com/anatwork14/agent-chatgpt-bridge/security/advisories/new
+    about: Report credential exposure, authentication bypass, permission-boundary failures, or arbitrary tool execution privately.
