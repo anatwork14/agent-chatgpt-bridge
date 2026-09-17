@@ -1,36 +1,55 @@
 ## What this changes
 
-<!-- Describe one focused behavior change. Link the issue or prior discussion when applicable.
-Large features, broad refactors, rewrites, new providers, and core architecture changes are normally
-not accepted without prior maintainer discussion; prior discussion does not guarantee acceptance. -->
+<!-- Describe one focused behavior change and link the issue/design discussion when applicable. -->
 
 Fixes #
 
+## Why
+
+<!-- What collaboration/runtime problem does this solve? Why does it belong in Agent Bridge rather than ARC, CompanyOS, codex-router, or a provider-specific client? -->
+
 ## Evidence
 
-<!-- Give the reproduction before the change and the exact result afterward. Browser UI changes need observed DOM evidence, not guessed selectors. -->
+<!-- Give the reproduction before the change and the exact result afterward. For protocol/provider changes, include deterministic fixtures and real interoperability evidence when available. -->
 
-## Scope and invariants
+## Architecture / invariants
 
-- [ ] I read and followed `CONTRIBUTING.md`.
-- [ ] This is a small, focused change with no unrelated cleanup or generated rewrite.
-- [ ] The change stays focused on ChatGPT web-backed Codex models; it does not add a generic provider or unrelated product surface.
-- [ ] Model, route, effort, connector, and capability selection remain explicit with no silent fallback or false-success path.
-- [ ] If this touches Full harness or MCP, every available Web effort retains the same turn-bound capability and Browser-only gains no broker or connector.
-- [ ] Terms and trademark claims remain factual; this change is not marketed as a quota or rate-limit bypass.
+- [ ] I read and followed `CONTRIBUTING.md` and `implementation.md`.
+- [ ] `SessionManager` remains the owner of canonical bridge history.
+- [ ] Provider/model/agent identity remains explicit and globally unambiguous.
+- [ ] This does not silently migrate a session or perform implicit provider fallback.
+- [ ] Provider/agent credentials stay with the provider/router/client that owns them.
+- [ ] Model/agent output remains untrusted and gains no capability merely by requesting it.
+- [ ] Cancellation reaches the exact active provider request or owned agent process.
+- [ ] Autonomous behavior remains bounded by explicit budgets and terminal states.
+- [ ] Persistence/audit fail-closed guarantees are not weakened.
+- [ ] No ARC execution-plane or CompanyOS product-layer responsibility is duplicated inside Agent Bridge.
 
 ## Verification
 
-- [ ] I ran `bun install --frozen-lockfile` in the repository root and `launcher/`.
-- [ ] I ran `bun run verify` with the Bun version pinned by `package.json`.
-- [ ] I added or updated a focused regression test for behavior changes.
-- [ ] I manually tested the affected behavior.
-- [ ] If this changes local tools, MCP execution, or the outer Codex agent loop, I tested it through a real installed Codex integration; DEV mode alone is acceptable only when execution is not affected.
-- [ ] If this changes ChatGPT browser UI handling, I included observed DOM evidence and a reproducible fixture instead of broadening selectors speculatively.
-- [ ] If this changes the launcher, I preserved macOS, Windows, and Linux packaging and named the platform packages actually built below.
-- [ ] I did not commit browser state, credentials, Tunnel IDs, raw logs, generated artifacts, or private paths.
-- [ ] I did not include an unrelated dependency update, release artifact, or version change.
+- [ ] `bun install --frozen-lockfile` passes in the repository root and `launcher/` when launcher code is affected.
+- [ ] `bun run verify` passes with the Bun version pinned by `package.json`.
+- [ ] I added or updated focused deterministic tests for behavior changes.
+- [ ] I manually exercised the affected integration when the change crosses a real provider/agent boundary.
+- [ ] ACP changes were checked against `docs/ACP_LIVE_SMOKE.md` where applicable.
+- [ ] codex-router changes preserve its downstream-provider-plane boundary and namespace rules.
+- [ ] ChatGPT Web changes include observed/reproducible UI evidence rather than speculative selector broadening.
+- [ ] Launcher changes preserve supported macOS, Windows, and Linux packaging/smoke expectations.
+- [ ] I did not commit credentials, browser state, capability URLs, raw private logs, generated release artifacts, or private paths.
 
-## Platform or account validation
+## Interoperability / platform evidence
 
-<!-- List the platforms, account tiers, Browser-only/Full modes, and packaged builds actually exercised. Write "not run" for anything not verified. -->
+<!-- List what was actually exercised: OS, Agent Bridge SHA, provider/client + version, model/profile, and result. Write "not run" for anything not verified. -->
+
+```text
+OS:
+Bridge SHA:
+Provider / agent:
+Provider / agent version:
+Profile / model:
+Result:
+```
+
+## Security notes
+
+<!-- Describe changes to permissions, environment inheritance, local binding, credential handling, process ownership, filesystem/terminal access, or audit output. Write "none" if unaffected. -->
