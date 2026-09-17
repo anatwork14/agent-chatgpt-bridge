@@ -1,5 +1,5 @@
 {
-  "name": "agent-chatgpt-bridge",
+  "name": "codex-chatgpt-web",
   "version": "5.0.6",
   "private": true,
   "description": "Local provider-agnostic AI collaboration runtime with persistent sessions, routing, bounded workflows, ChatGPT Web, codex-router, and ACP agent adapters.",
