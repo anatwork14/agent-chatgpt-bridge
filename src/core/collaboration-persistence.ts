@@ -7,6 +7,7 @@ import type {
   RoleBasedCollaborationRun,
   CollaborationTurnRecord,
   RoleBasedRunPatch,
+  RoleBasedCollaborationRunStatus,
 } from "./collaboration-domain";
 import {
   applyRoleBasedRunPatch,
@@ -17,6 +18,7 @@ import type { ParticipantAssignmentPlan } from "./participant-assignment";
 import type { CollaborationMessageRecord } from "./collaboration-transcript";
 import { assertCollaborationMessageIntegrity } from "./collaboration-transcript";
 import { BridgeError } from "./errors";
+
 
 /**
  * Full persisted participant representation reconstructed from storage,
@@ -100,7 +102,20 @@ export interface RoleBasedRunPersistence {
   listRunsBySession(sessionId: string): RoleBasedCollaborationRun[];
 
   getTranscript(runId: string): CollaborationMessageRecord[];
+
+  /**
+   * Returns all persisted participants for a run, sorted by sequenceIndex ASC.
+   * Used exclusively by the P4.6 recovery and resume paths.
+   */
+  getParticipants(runId: string): PersistedParticipant[];
+
+  /**
+   * Returns all runs whose status is one of the provided statuses.
+   * Used exclusively by the P4.6 recovery path to find orphaned running runs.
+   */
+  listRunsByStatuses(statuses: readonly RoleBasedCollaborationRunStatus[]): RoleBasedCollaborationRun[];
 }
+
 
 /**
  * Deterministic in-memory implementation of RoleBasedRunPersistence.
@@ -300,4 +315,18 @@ export class InMemoryRoleBasedRunPersistence implements RoleBasedRunPersistence 
     }
     return messages.map((m) => ({ ...m }));
   }
+
+  getParticipants(runId: string): PersistedParticipant[] {
+    const partMap = this.participantsByRun.get(runId);
+    if (!partMap) return [];
+    return Array.from(partMap.values()).sort((a, b) => a.sequenceIndex - b.sequenceIndex);
+  }
+
+  listRunsByStatuses(statuses: readonly RoleBasedCollaborationRunStatus[]): RoleBasedCollaborationRun[] {
+    const statusSet = new Set<string>(statuses);
+    return Array.from(this.runs.values())
+      .filter((r) => statusSet.has(r.status))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
 }
+

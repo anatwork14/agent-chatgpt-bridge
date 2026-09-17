@@ -443,3 +443,113 @@ export function prepareParticipants(
     records,
   });
 }
+
+import type { PersistedParticipant } from "../core/collaboration-persistence";
+import type { ParticipantRecord } from "../core/collaboration-domain";
+
+export interface RestoreParticipantsOptions {
+  readonly locator?: ExecutableLocator;
+  readonly factory?: ParticipantAdapterFactory;
+}
+
+/**
+ * Restores PreparedRoleParticipants from historically persisted participant snapshots.
+ *
+ * WHY THIS EXISTS:
+ *   After a daemon crash, we need to re-instantiate participant runtimes (adapters) without
+ *   consulting the current RoleRegistry or any live configuration. The persisted roleSnapshot
+ *   and configSnapshot capture the exact role definition and adapter config that were active
+ *   when the run was created, guaranteeing that a custom or deregistered role can still be
+ *   correctly restored.
+ *
+ * Invariants:
+ * 1. Does NOT consult RoleRegistry — exclusively uses persisted snapshots.
+ * 2. Preserves original participantId, adapterId, and sequenceIndex from storage.
+ * 3. Runs non-spawning preflight on all participants atomically.
+ * 4. Fails closed via ParticipantPreflightError if any participant cannot be preflighted.
+ * 5. reconstructed ParticipantRecords use persisted status, turnsExecuted, and consecutiveFailures.
+ */
+export function restorePersistedParticipants(
+  participants: readonly PersistedParticipant[],
+  options?: RestoreParticipantsOptions,
+): PreparedRoleParticipants {
+  if (participants.length === 0) {
+    throw new BridgeError(
+      "invalid_request",
+      "restorePersistedParticipants requires at least one participant",
+      false,
+    );
+  }
+
+  // Sort by sequenceIndex ASC to guarantee deterministic ordering
+  const sorted = [...participants].sort((a, b) => a.sequenceIndex - b.sequenceIndex);
+
+  const locator = options?.locator ?? defaultExecutableLocator;
+  const factory = options?.factory ?? createParticipantAdapter;
+
+  // Reconstruct ParticipantAssignmentPlans from persisted snapshots (no RoleRegistry)
+  const plans: ParticipantAssignmentPlan[] = sorted.map(p => Object.freeze({
+    participantId: p.id,
+    roleId: p.roleId,
+    role: p.roleSnapshot,
+    adapterId: p.adapterId,
+    config: p.configSnapshot,
+    sequenceIndex: p.sequenceIndex,
+  }));
+
+  // Non-spawning preflight for all participants
+  const preflightIssues: { plan: ParticipantAssignmentPlan; issue: ParticipantPreflightIssue }[] = [];
+  for (const plan of plans) {
+    const result = preflightParticipant(plan.config, locator);
+    if (!result.ok) {
+      for (const issue of result.issues) {
+        preflightIssues.push({ plan, issue });
+      }
+    }
+  }
+
+  if (preflightIssues.length > 0) {
+    const issues = preflightIssues.map(p => p.issue);
+    const firstPlan = preflightIssues[0]!.plan;
+    throw new ParticipantPreflightError(issues, firstPlan.participantId, firstPlan.roleId);
+  }
+
+  // Bind adapters
+  const runtimes = plans.map(plan => bindParticipant(plan, factory));
+
+  // Reconstruct ParticipantRecords from persisted state (preserving turnsExecuted, consecutiveFailures, etc.)
+  const participantIds: string[] = plans.map(p => p.participantId);
+  const participantsById: Record<string, ParticipantRecord> = {};
+  for (const p of sorted) {
+    participantsById[p.id] = Object.freeze({
+      id: p.id,
+      roleId: p.roleId,
+      adapterId: p.adapterId,
+      status: p.status,
+      turnsExecuted: p.turnsExecuted,
+      consecutiveFailures: p.consecutiveFailures,
+      createdAt: p.createdAt,
+      lastActiveAt: p.lastActiveAt,
+    });
+  }
+
+  return Object.freeze({
+    plans: Object.freeze(plans),
+    runtimes: Object.freeze(runtimes),
+    records: Object.freeze({
+      participantIds: Object.freeze(participantIds),
+      participantsById: Object.freeze(participantsById),
+    }),
+  });
+}
+
+/**
+ * Injectable seam allowing RunController to restore participants from persisted state
+ * without importing AcpAgentAdapter, SubprocessJsonlAdapter, or participant-factory directly.
+ * This preserves the clean dependency direction: RunController → (injected function) → factory.
+ */
+export type PersistedParticipantRestorer = (
+  participants: readonly PersistedParticipant[],
+  options?: RestoreParticipantsOptions,
+) => PreparedRoleParticipants;
+

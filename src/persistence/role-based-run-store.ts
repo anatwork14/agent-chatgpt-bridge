@@ -79,6 +79,18 @@ export class RoleBasedRunStore {
     return rows.map((row) => this.reconstructRun(row));
   }
 
+  listByStatuses(statuses: readonly string[]): RoleBasedCollaborationRun[] {
+    if (statuses.length === 0) return [];
+    const db = getDatabase();
+    const placeholders = statuses.map(() => "?").join(", ");
+    const rows = db
+      .query(
+        `SELECT * FROM role_based_runs WHERE status IN (${placeholders}) ORDER BY created_at ASC, id ASC`,
+      )
+      .all(...statuses) as any[];
+    return rows.map((row) => this.reconstructRun(row));
+  }
+
   update(id: string, updates: RoleBasedRunPatch): void {
     const db = getDatabase();
     const existing = db.query("SELECT * FROM role_based_runs WHERE id = ?").get(id) as any;

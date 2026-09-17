@@ -1,12 +1,14 @@
 import { getDatabase } from "./database";
 import type {
   RoleBasedRunPersistence,
+  PersistedParticipant,
 } from "../core/collaboration-persistence";
 import type {
   RoleBasedCollaborationRun,
   CollaborationTurnRecord,
   ParticipantRecord,
   RoleBasedRunPatch,
+  RoleBasedCollaborationRunStatus,
 } from "../core/collaboration-domain";
 import type { ParticipantAssignmentPlan } from "../core/participant-assignment";
 import type { CollaborationMessageRecord } from "../core/collaboration-transcript";
@@ -14,6 +16,7 @@ import { RoleBasedRunStore } from "./role-based-run-store";
 import { CollaborationParticipantStore } from "./collaboration-participant-store";
 import { CollaborationTurnStore } from "./collaboration-turn-store";
 import { CollaborationMessageStore } from "./collaboration-message-store";
+
 
 /**
  * Concrete SQLite implementation of RoleBasedRunPersistence.
@@ -96,4 +99,14 @@ export class SqliteCollaborationPersistence implements RoleBasedRunPersistence {
   getTranscript(runId: string): CollaborationMessageRecord[] {
     return this.messageStore.listByRun(runId);
   }
+
+  getParticipants(runId: string): PersistedParticipant[] {
+    return this.participantStore.listByRun(runId);
+  }
+
+  listRunsByStatuses(statuses: readonly RoleBasedCollaborationRunStatus[]): RoleBasedCollaborationRun[] {
+    return this.runStore.listByStatuses(statuses);
+  }
 }
+
+

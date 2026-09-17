@@ -20,6 +20,9 @@ import {
   type RoleBasedCollaborationRunStatus,
   type ParticipantRecord,
   type RoleBasedRunPatch,
+  type RoleExecutionCursor,
+  type RoleBasedRecoveryReport,
+  type RoleBasedResumeOptions,
   isRoleBasedRunTerminalStatus,
   assertRoleBasedRunPatchAllowed,
   normalizeCancellationReason,
@@ -34,14 +37,20 @@ import type {
   RoleBasedExecutionOptions,
   ActiveRoleRunControl,
 } from "./collaboration-runtime";
-import type { RoleBasedRunPersistence } from "./collaboration-persistence";
+import type {
+  RoleBasedRunPersistence,
+  PersistedParticipant,
+} from "./collaboration-persistence";
 import {
   type CollaborationMessageRecord,
   computeCollaborationMessageHash,
   assertMessageWithinSizeBound,
   normalizeCanonicalText,
   collaborationMessagesToPriorTurns,
+  assertCollaborationMessageIntegrity,
 } from "./collaboration-transcript";
+import type { PersistedParticipantRestorer } from "../agents/participant-factory";
+
 
 const HARD_MAX_ROUNDS = 100;
 const DEFAULT_BUDGET: CollaborationRun["budget"] = {
@@ -85,6 +94,8 @@ export class RunController {
   private readonly runSettlements = new Map<string, Promise<void>>();
   private readonly activeRoleRuns = new Map<string, ActiveRoleRunControl>();
   private readonly roleRunSettlements = new Map<string, Promise<RoleBasedExecutionResult>>();
+  /** Prevents concurrent double-resume attempts for the same runId. */
+  private readonly resumingRoleRuns = new Set<string>();
 
   constructor(
     private readonly runStore: RunStore,
@@ -96,7 +107,9 @@ export class RunController {
       config?: ExternalAgentAdapterConfig,
     ) => ExternalAgentAdapter,
     private readonly rolePersistence?: RoleBasedRunPersistence,
+    private readonly restoreParticipants?: PersistedParticipantRestorer,
   ) {}
+
 
   async startRun(
     sessionId: string,
@@ -920,6 +933,7 @@ export class RunController {
     control: ActiveRoleRunControl,
     options: RoleBasedExecutionOptions | undefined,
     initialRun: RoleBasedCollaborationRun,
+    cursor?: RoleExecutionCursor,
   ): Promise<RoleBasedExecutionResult> {
     const clock = options?.clock ?? (() => new Date().toISOString());
     const nowFn = options?.now ?? (() => Date.now());
@@ -927,7 +941,12 @@ export class RunController {
     const messageIdFactory = options?.messageIdFactory ?? generateCollaborationMessageId;
     const persistence = control.persistence;
 
-    const startTimestamp = nowFn();
+    // On fresh start: startTimestamp is now.
+    // On resume: startTimestamp is parsed from run.startedAt so wall-clock includes
+    // the time the daemon was down and the time the run was paused.
+    const startTimestamp = cursor
+      ? new Date(initialRun.startedAt!).getTime()
+      : nowFn();
     const budget = initialRun.budget;
 
     const plansByRoleId = new Map<string, (typeof prepared.plans)[number]>();
@@ -944,18 +963,27 @@ export class RunController {
     const participantIds = [...initialRun.participantIds];
 
     const initializedParticipants = new Set<string>();
-    let priorTurns: PriorCollaborationTurn[] = [];
+    // If resuming with a cursor, restore priorTurns from the cursor (already hash-verified)
+    let priorTurns: PriorCollaborationTurn[] = cursor ? [...cursor.priorTurns] : [];
     const turnHistory: string[] = [];
     const turns: CollaborationTurnRecord[] = [];
-    let messageSequenceIndex = 0;
+    let messageSequenceIndex = cursor ? cursor.nextMessageSequenceIndex : 0;
     let runStatus: RoleBasedCollaborationRunStatus = "running";
     let finalSummary: string | undefined = undefined;
-    let round = 0;
-    let turnIndex = 0;
+    // Resume restores round, seqIdx, turnIndex from cursor
+    let round = cursor ? cursor.round : 0;
+    let turnIndex = cursor ? cursor.nextTurnIndex : 0;
+    // Starting seqIdx for the outer loop: on resume, start at cursor.sequenceIndex
+    const startSeqIdx = cursor ? cursor.sequenceIndex : 0;
 
     try {
+      let isFirstRound = true;
       loop: while (runStatus === "running") {
-        for (let seqIdx = 0; seqIdx < config.policy.roleSequence.length; seqIdx++) {
+        // On the first iteration (resume path): start at cursor.sequenceIndex.
+        // On all subsequent iterations (wrap-around in repeat_until_done): start at 0.
+        const seqStart = isFirstRound ? startSeqIdx : 0;
+        isFirstRound = false;
+        for (let seqIdx = seqStart; seqIdx < config.policy.roleSequence.length; seqIdx++) {
           const roleId = config.policy.roleSequence[seqIdx]!;
           const plan = plansByRoleId.get(roleId);
           if (!plan) {
@@ -966,10 +994,15 @@ export class RunController {
             throw new BridgeError("invalid_request", `Missing runtime for participant '${plan.participantId}'`, false);
           }
 
-          let attemptInRole = 0;
+          // On resume: restore consecutiveFailures for the participant being resumed
+          const persistedPart = participantsById[runtime.participantId];
+          let attemptInRole = cursor && seqIdx === startSeqIdx
+            ? (persistedPart?.consecutiveFailures ?? 0)
+            : 0;
           const maxRetries = budget.maxRetriesPerParticipant ?? P4_DEFAULT_BUDGET.maxRetriesPerParticipant;
 
           roleAttemptLoop: while (true) {
+
             // Check maxTurns budget before turn execution
             if (turnIndex >= budget.maxTurns) {
               runStatus = "budget_exhausted";
@@ -1866,4 +1899,593 @@ export class RunController {
   getRun(runId: string): CollaborationRun | null {
     return this.runStore.get(runId);
   }
+
+  // ============================================================
+  // P4.6 — Daemon Recovery
+  // ============================================================
+
+  /**
+   * Reconciles orphaned role-based runs after a daemon restart.
+   *
+   * WHY THIS EXISTS:
+   *   When the daemon crashes while a run is status=running, the SQLite record is
+   *   permanently orphaned in that state. On the next startup, we must identify
+   *   these runs and transition them to a safe, queryable state before any new
+   *   runs are allowed to start. This prevents ghost-running runs from silently
+   *   blocking future schedules or corrupting execution counters.
+   *
+   * Safety rules:
+   * - NEVER spawns adapters, child processes, or network connections.
+   * - NEVER auto-resumes — transitions to paused and stops.
+   * - NEVER modifies terminal runs.
+   * - Processes each run atomically; failures are isolated per-run.
+   * - Idempotent: calling twice finds 0 running runs on the second call.
+   *
+   * Interruption cases:
+   *   Case A: run.activeParticipantId === null
+   *     → safe boundary (between turns). Transition directly to paused. No synthetic turn.
+   *   Case B: run.activeParticipantId !== null
+   *     → mid-turn crash. Record synthetic daemon_restarted failed turn, evaluate budgets,
+   *       transition to paused (or terminal if budgets exhausted).
+   */
+  recoverRoleBasedRuns(options?: { now?: () => number; clock?: () => string }): RoleBasedRecoveryReport {
+    const persistence = this.rolePersistence;
+    if (!persistence) {
+      return {
+        examined: 0,
+        pausedAtSafeBoundary: 0,
+        syntheticTurnRecorded: 0,
+        budgetExhaustedAtRecovery: 0,
+        failedRunIds: [],
+      };
+    }
+
+    const nowFn = options?.now ?? (() => Date.now());
+    const clock = options?.clock ?? (() => new Date().toISOString());
+
+    const orphanedRuns = persistence.listRunsByStatuses(["running"]);
+    let pausedAtSafeBoundary = 0;
+    let syntheticTurnRecorded = 0;
+    let budgetExhaustedAtRecovery = 0;
+    const failedRunIds: string[] = [];
+
+    for (const run of orphanedRuns) {
+      // Skip any run that's already active in this process (should be impossible at startup, but guard)
+      if (this.activeRoleRuns.has(run.id)) {
+        continue;
+      }
+
+      try {
+        this._recoverSingleRun(run, persistence, nowFn, clock, {
+          onPausedAtSafeBoundary: () => { pausedAtSafeBoundary++; },
+          onSyntheticTurnRecorded: () => { syntheticTurnRecorded++; },
+          onBudgetExhaustedAtRecovery: () => { budgetExhaustedAtRecovery++; },
+        });
+      } catch {
+        failedRunIds.push(run.id);
+      }
+    }
+
+    return {
+      examined: orphanedRuns.length,
+      pausedAtSafeBoundary,
+      syntheticTurnRecorded,
+      budgetExhaustedAtRecovery,
+      failedRunIds,
+    };
+  }
+
+  private _recoverSingleRun(
+    run: RoleBasedCollaborationRun,
+    persistence: RoleBasedRunPersistence,
+    nowFn: () => number,
+    clock: () => string,
+    callbacks: {
+      onPausedAtSafeBoundary: () => void;
+      onSyntheticTurnRecorded: () => void;
+      onBudgetExhaustedAtRecovery: () => void;
+    },
+  ): void {
+    const nowMs = nowFn();
+    const nowIso = clock();
+
+    if (!run.activeParticipantId) {
+      // Case A: safe boundary — no active participant when crash occurred
+      persistence.finalizeRun(run.id, {
+        status: "paused",
+        activeParticipantId: null,
+      });
+      callbacks.onPausedAtSafeBoundary();
+      return;
+    }
+
+    // Case B: crash during an active participant turn
+    const activeParticipantId = run.activeParticipantId;
+    const activeParticipant = run.participantsById[activeParticipantId];
+    if (!activeParticipant) {
+      // Corrupt state — transition to paused as safe fallback
+      persistence.finalizeRun(run.id, {
+        status: "paused",
+        activeParticipantId: null,
+      });
+      callbacks.onPausedAtSafeBoundary();
+      return;
+    }
+
+    // Determine existing turn count for the synthetic turn index
+    const existingTurns = persistence.getTurns(run.id);
+    const syntheticTurnIndex = existingTurns.length;
+    const consecutiveFailures = (activeParticipant.consecutiveFailures ?? 0) + 1;
+
+    // Evaluate budget state at recovery time
+    const wallClockElapsed = run.startedAt
+      ? nowMs - new Date(run.startedAt).getTime()
+      : nowMs;
+    const wallClockExpired = wallClockElapsed >= run.budget.maxWallClockMs;
+    const turnsExhausted = syntheticTurnIndex >= run.budget.maxTurns;
+    const retriesExhausted = consecutiveFailures > run.budget.maxRetriesPerParticipant;
+
+    // Determine final status after synthetic turn
+    let finalStatus: RoleBasedCollaborationRunStatus;
+    let finalSummary: string;
+    let finalCompletedAt: string | null;
+
+    if (wallClockExpired) {
+      finalStatus = "timed_out";
+      finalSummary = `Exceeded maximum wall-clock deadline (${run.budget.maxWallClockMs} ms)`;
+      finalCompletedAt = nowIso;
+      callbacks.onBudgetExhaustedAtRecovery();
+    } else if (turnsExhausted) {
+      finalStatus = "budget_exhausted";
+      finalSummary = `Exceeded maximum allowed turns (${run.budget.maxTurns})`;
+      finalCompletedAt = nowIso;
+      callbacks.onBudgetExhaustedAtRecovery();
+    } else if (retriesExhausted) {
+      finalStatus = "failed";
+      finalSummary = `Required participant '${activeParticipantId}' exhausted retry budget after daemon restart`;
+      finalCompletedAt = nowIso;
+      callbacks.onBudgetExhaustedAtRecovery();
+    } else {
+      finalStatus = "paused";
+      finalSummary = `Daemon restarted while participant '${activeParticipantId}' was executing turn ${syntheticTurnIndex}`;
+      finalCompletedAt = null;
+    }
+
+    const syntheticTurnId = generateCollaborationTurnId();
+    const syntheticTurn: CollaborationTurnRecord = {
+      id: syntheticTurnId,
+      runId: run.id,
+      round: run.round,
+      turnIndex: syntheticTurnIndex,
+      participantId: activeParticipantId,
+      roleId: activeParticipant.roleId,
+      status: "failed",
+      inputSummary: `Turn interrupted by daemon restart (participant: ${activeParticipantId})`,
+      error: {
+        code: "daemon_restarted",
+        message: `Daemon restarted during participant turn. The participant may have executed side effects before the crash.`,
+        retryable: true,
+      },
+      startedAt: nowIso,
+      completedAt: nowIso,
+      // durationMs intentionally omitted — duration is unknown after crash
+    };
+
+    const updatedParticipant: ParticipantRecord = {
+      ...activeParticipant,
+      status: finalStatus === "failed" || finalStatus === "timed_out" || finalStatus === "budget_exhausted"
+        ? "failed"
+        : "idle",
+      consecutiveFailures,
+      lastActiveAt: nowIso,
+    };
+
+    // Atomic: write synthetic turn + update participant + transition run status
+    persistence.recordTurnTransaction({
+      turn: syntheticTurn,
+      // No message record — daemon_restarted turns do NOT produce canonical output
+      participant: updatedParticipant,
+      runUpdates: {
+        id: run.id,
+        status: finalStatus,
+        activeParticipantId: null,
+        finalSummary,
+        completedAt: finalCompletedAt,
+      },
+    });
+
+    callbacks.onSyntheticTurnRecorded();
+  }
+
+  // ============================================================
+  // P4.6 — Safe Explicit Resume
+  // ============================================================
+
+  /**
+   * Safely resumes a paused role-based collaboration run.
+   *
+   * WHY THIS EXISTS:
+   *   After a daemon_restarted or participant-issued pause, the run is left in a
+   *   well-defined paused state with all turns canonically persisted. Resume must
+   *   reconstruct the exact execution cursor from persistence (no in-memory guessing),
+   *   validate all budgets against the original wall-clock origin (run.startedAt),
+   *   require explicit acknowledgement if the last relevant turn was interrupted by a crash,
+   *   and then execute exactly as if the run had never paused.
+   *
+   * Validation order (fail-closed at each step):
+   *   1. Load canonical run → verify paused
+   *   2. Reserve resume lock (prevent double-resume)
+   *   3. Load participants/turns/transcript
+   *   4. Derive and validate execution cursor (hash integrity)
+   *   5. Validate replay requirement vs allowReplayInterruptedTurn
+   *   6. Check wall-clock budget from original startedAt
+   *   7. Check maxTurns budget
+   *   8. Validate bridge session (not closed)
+   *   9. Preflight/restore participants (non-spawning)
+   *   10. Persist paused → running transition
+   *   11. Register ActiveRoleRunControl
+   *   12. Execute loop
+   *
+   * Scope constraints:
+   * - No automatic resume on startup (must be called explicitly)
+   * - No REST route in P4.6 (internal/controller API only)
+   */
+  async resumeRoleBasedRun(
+    runId: string,
+    options?: RoleBasedResumeOptions,
+  ): Promise<RoleBasedCollaborationRun> {
+    const persistence = this.requireRolePersistence();
+
+    // Step 1: Load canonical run and verify paused
+    const run = persistence.getRun(runId);
+    if (!run) {
+      throw new BridgeError("run_not_found", `Role-based run '${runId}' not found`, false);
+    }
+    if (run.status !== "paused") {
+      throw new BridgeError(
+        "invalid_state_transition",
+        `Cannot resume role-based run '${runId}' with status '${run.status}' (must be 'paused')`,
+        false,
+      );
+    }
+
+    // Step 2: Reserve resume lock
+    if (this.resumingRoleRuns.has(runId)) {
+      throw new BridgeError(
+        "resume_in_progress",
+        `Run '${runId}' is already being resumed`,
+        false,
+      );
+    }
+    this.resumingRoleRuns.add(runId);
+
+    try {
+      return await this._executeResume(run, persistence, options);
+    } finally {
+      this.resumingRoleRuns.delete(runId);
+    }
+  }
+
+  private async _executeResume(
+    run: RoleBasedCollaborationRun,
+    persistence: RoleBasedRunPersistence,
+    options?: RoleBasedResumeOptions,
+  ): Promise<RoleBasedCollaborationRun> {
+    const nowFn = options?.now ?? (() => Date.now());
+    const clock = options?.clock ?? (() => new Date().toISOString());
+
+    // Step 3: Load participants, turns, transcript
+    const participants = persistence.getParticipants(run.id);
+    const turns = persistence.getTurns(run.id);
+    const messages = persistence.getTranscript(run.id);
+
+    // Step 4: Derive execution cursor (validates turn/message continuity + hash integrity)
+    const cursor = deriveRoleExecutionCursor(run, participants, turns, messages);
+
+    // Step 5: Validate replay requirement
+    if (cursor.interruptedTurnReplayRequired && options?.allowReplayInterruptedTurn !== true) {
+      throw new BridgeError(
+        "resume_replay_confirmation_required",
+        `Run '${run.id}' was interrupted by a daemon crash during participant '${cursor.interruptedParticipantId}' turn. ` +
+        `The participant may have executed filesystem writes, terminal commands, or external side effects before the crash. ` +
+        `Set allowReplayInterruptedTurn=true to acknowledge and replay the interrupted turn.`,
+        false,
+      );
+    }
+
+    // Step 6: Check wall-clock budget from original startedAt
+    if (!run.startedAt) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}' has no startedAt timestamp`,
+        false,
+      );
+    }
+    const originMs = new Date(run.startedAt).getTime();
+    const nowMs = nowFn();
+    const wallClockElapsed = nowMs - originMs;
+    if (wallClockElapsed >= run.budget.maxWallClockMs) {
+      throw new BridgeError(
+        "budget_exhausted",
+        `Run '${run.id}' wall-clock budget exhausted (${wallClockElapsed} ms elapsed, limit ${run.budget.maxWallClockMs} ms). Cannot resume.`,
+        false,
+      );
+    }
+
+    // Step 7: Check maxTurns budget
+    if (cursor.nextTurnIndex >= run.budget.maxTurns) {
+      throw new BridgeError(
+        "budget_exhausted",
+        `Run '${run.id}' turn budget exhausted (${cursor.nextTurnIndex} turns consumed, limit ${run.budget.maxTurns}). Cannot resume.`,
+        false,
+      );
+    }
+
+    // Step 8: Validate bridge session
+    const session = await this.sessionManager.get(run.sessionId);
+    if (session.status === "closed" || session.status === "closing") {
+      throw new BridgeError("session_closed", `Session '${run.sessionId}' is closed`, false);
+    }
+
+    // Step 9: Preflight/restore participants using persisted snapshots
+    if (!this.restoreParticipants) {
+      throw new BridgeError(
+        "role_persistence_unavailable",
+        "resumeRoleBasedRun requires a restoreParticipants function to be configured on RunController",
+        false,
+      );
+    }
+    const prepared = this.restoreParticipants(participants);
+
+    // Step 10: Persist paused → running transition
+    persistence.finalizeRun(run.id, {
+      status: "running",
+      activeParticipantId: null,
+      finalSummary: null,
+    });
+
+    // Load the freshly-updated run as initialRun for the loop
+    const resumedRun = persistence.getRun(run.id);
+    if (!resumedRun) {
+      throw new BridgeError("not_found", `Role-based run '${run.id}' not found after resume transition`, false);
+    }
+
+    // Step 11: Register ActiveRoleRunControl
+    const rootAbortController = new AbortController();
+    const onSignalAbort = () => {
+      if (options?.signal) {
+        rootAbortController.abort(options.signal.reason);
+      }
+    };
+    if (options?.signal?.aborted) {
+      rootAbortController.abort(options.signal.reason);
+    } else if (options?.signal) {
+      options.signal.addEventListener("abort", onSignalAbort, { once: true });
+    }
+
+    const control: ActiveRoleRunControl = {
+      runId: run.id,
+      rootAbortController,
+      persistence,
+      cancelledParticipantIds: new Set<string>(),
+      cancelledParticipantReasons: new Map<string, string>(),
+    };
+    this.activeRoleRuns.set(run.id, control);
+
+    // Reconstruct CollaborationConfig from persisted run data
+    const resumeConfig: CollaborationConfig = {
+      objective: resumedRun.objective,
+      policy: resumedRun.policy,
+      // roles not used in the loop directly (plans come from prepared)
+      roles: {},
+      budget: resumedRun.budget,
+    };
+
+    // Reconstruct RoleBasedExecutionOptions for the loop
+    const loopOptions: RoleBasedExecutionOptions = {
+      signal: options?.signal,
+      clock,
+      now: nowFn,
+    };
+
+    // Step 12: Execute loop with cursor
+    const settlement = this.executeRoleBasedLoop(
+      run.id,
+      run.sessionId,
+      resumeConfig,
+      prepared,
+      control,
+      loopOptions,
+      resumedRun,
+      cursor,
+    )
+      .catch((error) => {
+        if (error instanceof BridgeError && error.code === "collaboration_persistence_failed") {
+          throw error;
+        }
+
+        const currentRun = persistence.getRun(run.id);
+        const finalStatus: RoleBasedCollaborationRunStatus = control.rootAbortController.signal.aborted
+          ? "cancelled"
+          : "failed";
+        const completedAt = clock();
+        const finalSummary = error instanceof Error ? error.message : String(error);
+        if (currentRun && !isRoleBasedRunTerminalStatus(currentRun.status)) {
+          try {
+            persistence.finalizeRun(run.id, {
+              status: finalStatus,
+              finalSummary,
+              completedAt,
+              activeParticipantId: null,
+            });
+          } catch (persistErr) {
+            throw new BridgeError(
+              "collaboration_persistence_failed",
+              `Failed to persist resume failure outcome: ${persistErr instanceof Error ? persistErr.message : String(persistErr)}`,
+              false,
+            );
+          }
+        }
+
+        const canonicalRun = persistence.getRun(run.id);
+        if (!canonicalRun) {
+          throw new BridgeError("not_found", `Role-based run '${run.id}' not found`, false);
+        }
+        const canonicalTurns = persistence.getTurns(run.id);
+        return { run: canonicalRun, turns: canonicalTurns };
+      })
+      .finally(() => {
+        if (options?.signal) {
+          options.signal.removeEventListener("abort", onSignalAbort);
+        }
+        this.activeRoleRuns.delete(run.id);
+        this.roleRunSettlements.delete(run.id);
+      });
+
+    this.roleRunSettlements.set(run.id, settlement);
+    return resumedRun;
+  }
 }
+
+// ============================================================
+// P4.6 — Pure Cursor Derivation (no DB calls, no network, no processes)
+// ============================================================
+
+/**
+ * Derives a deterministic RoleExecutionCursor from persisted run state.
+ *
+ * WHY THIS EXISTS:
+ *   After a daemon crash or explicit pause, we need to reconstruct exactly where
+ *   execution should resume without any in-memory state. This function is the single
+ *   authoritative source for that reconstruction. It is a pure function (zero side effects)
+ *   so it can be tested deterministically without database infrastructure.
+ *
+ * Algorithm:
+ *   1. Validate structural integrity (turn index gaps, message sequence gaps, participant ordering)
+ *   2. Re-derive round/seqIdx by replaying the turn history in order
+ *   3. Identify if the last relevant turn was daemon_restarted (requiring replay acknowledgement)
+ *   4. Reconstruct priorTurns from hash-verified canonical messages
+ *
+ * Failures are fail-closed: any integrity violation throws BridgeError("persistence_corruption", ...)
+ */
+export function deriveRoleExecutionCursor(
+  run: RoleBasedCollaborationRun,
+  participants: readonly PersistedParticipant[],
+  turns: readonly CollaborationTurnRecord[],
+  messages: readonly CollaborationMessageRecord[],
+): RoleExecutionCursor {
+  // Validate startedAt (required for wall-clock tracking)
+  if (!run.startedAt) {
+    throw new BridgeError(
+      "persistence_corruption",
+      `Run '${run.id}' is missing startedAt timestamp required for cursor derivation`,
+      false,
+    );
+  }
+
+  // Validate turn index continuity: must be 0, 1, 2, ..., N-1
+  const sortedTurns = [...turns].sort((a, b) => a.turnIndex - b.turnIndex);
+  for (let i = 0; i < sortedTurns.length; i++) {
+    if (sortedTurns[i]!.turnIndex !== i) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': turn index gap detected at position ${i} (found turnIndex=${sortedTurns[i]!.turnIndex})`,
+        false,
+      );
+    }
+  }
+
+  // Validate message sequence continuity: must be 0, 1, 2, ..., M-1
+  const sortedMessages = [...messages].sort((a, b) => a.sequenceIndex - b.sequenceIndex);
+  for (let i = 0; i < sortedMessages.length; i++) {
+    if (sortedMessages[i]!.sequenceIndex !== i) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': message sequence gap detected at position ${i} (found sequenceIndex=${sortedMessages[i]!.sequenceIndex})`,
+        false,
+      );
+    }
+  }
+
+  // Validate and verify hash integrity of all messages
+  for (const msg of sortedMessages) {
+    assertCollaborationMessageIntegrity(msg);
+  }
+
+  // Validate participant sequenceIndex: must be 0..N-1 with no duplicates
+  const sortedParticipants = [...participants].sort((a, b) => a.sequenceIndex - b.sequenceIndex);
+  for (let i = 0; i < sortedParticipants.length; i++) {
+    if (sortedParticipants[i]!.sequenceIndex !== i) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': participant sequence gap detected at position ${i} (found sequenceIndex=${sortedParticipants[i]!.sequenceIndex})`,
+        false,
+      );
+    }
+  }
+
+  const policy = run.policy;
+  const roleSequence = policy.roleSequence;
+  const numRoles = roleSequence.length;
+
+  // Build participantId → sequenceIndex map from persisted participants
+  const participantSeqMap = new Map<string, number>();
+  for (const p of sortedParticipants) {
+    participantSeqMap.set(p.id, p.sequenceIndex);
+  }
+
+  // Replay turns to derive round/seqIdx
+  let round = 0;
+  let seqIdx = 0;
+  let interruptedTurnReplayRequired = false;
+  let interruptedParticipantId: string | undefined = undefined;
+
+  for (const turn of sortedTurns) {
+    if (turn.status === "completed") {
+      // Successful turn: advance to the next role in sequence
+      seqIdx += 1;
+      if (seqIdx >= numRoles) {
+        if (policy.loopMode === "once") {
+          // Sequence complete — cursor is at the end (run should be terminal)
+          seqIdx = numRoles;
+        } else {
+          seqIdx = 0;
+          round += 1;
+        }
+      }
+      // Clear any prior interruption flag on success
+      interruptedTurnReplayRequired = false;
+      interruptedParticipantId = undefined;
+    } else if (turn.status === "failed") {
+      // Failed turn: check if it's a daemon_restarted special code
+      if (turn.error?.code === "daemon_restarted") {
+        // Mark replay required; seqIdx stays on same participant
+        interruptedTurnReplayRequired = true;
+        interruptedParticipantId = turn.participantId;
+      } else {
+        // Ordinary failure (retryable or not): seqIdx stays (retry on same role)
+        interruptedTurnReplayRequired = false;
+        interruptedParticipantId = undefined;
+      }
+    } else if (turn.status === "cancelled") {
+      // Cancelled turn: leave seqIdx where it is; run should be terminal
+      interruptedTurnReplayRequired = false;
+      interruptedParticipantId = undefined;
+    }
+    // "running" status turns are not expected in a fully persisted transcript — ignore
+  }
+
+  // Reconstruct priorTurns from canonical messages (already hash-verified above)
+  const priorTurns = collaborationMessagesToPriorTurns(sortedMessages);
+
+  return {
+    round,
+    sequenceIndex: seqIdx,
+    nextTurnIndex: sortedTurns.length,
+    nextMessageSequenceIndex: sortedMessages.length,
+    priorTurns,
+    interruptedTurnReplayRequired,
+    interruptedParticipantId,
+  };
+}
+

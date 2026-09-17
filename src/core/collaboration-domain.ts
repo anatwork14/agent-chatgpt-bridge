@@ -2,8 +2,10 @@ import type {
   BridgeOutputContract,
   ExternalAgentAdapterConfig,
   AgentDecision,
+  PriorCollaborationTurn,
 } from "./domain";
 import { BridgeError } from "./errors";
+
 
 /**
  * Built-in logical collaboration roles.
@@ -376,3 +378,69 @@ export interface CollaborationConfig {
   readonly roles: Partial<Record<RoleId, ParticipantConfig>> | RoleAssignment[];
   readonly budget?: Partial<RoleBasedRunBudget>;
 }
+
+// ============================================================
+// P4.6 — Recovery / Resume Domain Types
+// ============================================================
+
+/**
+ * Durable, deterministic execution cursor reconstructed entirely from
+ * persisted turns, messages, and participants after a daemon crash.
+ * Contains no runtime handles, process objects, or in-memory state.
+ */
+export interface RoleExecutionCursor {
+  /** Current collaboration round (0-based). */
+  readonly round: number;
+  /** Index within policy.roleSequence for the next turn to execute (0-based). */
+  readonly sequenceIndex: number;
+  /** turnIndex to assign to the next turn. */
+  readonly nextTurnIndex: number;
+  /** sequenceIndex to assign to the next canonical message. */
+  readonly nextMessageSequenceIndex: number;
+  /** Canonical prior turns (hash-verified). */
+  readonly priorTurns: readonly PriorCollaborationTurn[];
+  /**
+   * True if the last relevant turn for the next participant in the sequence
+   * was a daemon_restarted failure. Execution MUST NOT proceed until the
+   * caller acknowledges the interruption via allowReplayInterruptedTurn.
+   */
+  readonly interruptedTurnReplayRequired: boolean;
+  /** Participant whose in-flight turn was interrupted by the daemon crash. */
+  readonly interruptedParticipantId?: string;
+}
+
+/**
+ * Report returned by recoverRoleBasedRuns() at daemon startup.
+ * Purely informational — no adapters are spawned.
+ */
+export interface RoleBasedRecoveryReport {
+  /** Total number of runs found in running status. */
+  readonly examined: number;
+  /** Runs transitioned to paused (safe boundary, no active participant). */
+  readonly pausedAtSafeBoundary: number;
+  /** Runs for which a synthetic daemon_restarted turn was recorded. */
+  readonly syntheticTurnRecorded: number;
+  /** Runs that had budgets exhausted at recovery time — transitioned to terminal. */
+  readonly budgetExhaustedAtRecovery: number;
+  /** IDs of runs that could not be recovered (persistence error). */
+  readonly failedRunIds: readonly string[];
+}
+
+/**
+ * Options governing a safe explicit resume of a paused role-based run.
+ */
+export interface RoleBasedResumeOptions {
+  /**
+   * When true, acknowledges that the interrupted participant turn may be
+   * replayed from the beginning. Must be set if the last relevant turn has
+   * error.code === "daemon_restarted".
+   */
+  readonly allowReplayInterruptedTurn?: boolean;
+  /** Optional external abort signal. */
+  readonly signal?: AbortSignal;
+  /** Testability: override clock. */
+  readonly clock?: () => string;
+  /** Testability: override wall-clock epoch. */
+  readonly now?: () => number;
+}
+
