@@ -126,7 +126,7 @@ export interface ParticipantConfig {
   readonly cwd?: string;
 }
 
-export interface Participant {
+export interface ParticipantRecord {
   readonly id: string;
   readonly roleId: RoleId;
   readonly adapterId: string;
@@ -135,8 +135,16 @@ export interface Participant {
   readonly consecutiveFailures: number;
   readonly createdAt: string;
   readonly lastActiveAt?: string;
-  /** Adapter instance handle owned by the RunController */
+}
+
+/**
+ * Runtime-only participant execution state.
+ * Kept strictly in memory by RunController during active turns; NEVER persisted or serialized.
+ */
+export interface ParticipantRuntime {
+  readonly participantId: string;
   readonly adapter: ExternalAgentAdapter;
+  readonly abortController?: AbortController;
 }
 
 export interface RoleAssignment {
@@ -158,7 +166,7 @@ export type CollaborationRunStatus =
   | "budget_exhausted"
   | "timed_out";
 
-export interface CollaborationRunBudget {
+export interface RoleBasedRunBudget {
   /** Maximum total turns across ALL participants in the run */
   readonly maxTurns: number;
   /** Maximum participants allowed to be instantiated in this run */
@@ -177,7 +185,7 @@ export interface CollaborationRunBudget {
   };
 }
 
-export interface CollaborationTurn {
+export interface CollaborationTurnRecord {
   readonly id: string;
   readonly runId: string;
   readonly round: number;
@@ -197,16 +205,20 @@ export interface CollaborationTurn {
   readonly durationMs?: number;
 }
 
-export interface CollaborationRun {
+export interface RoleBasedCollaborationRun {
   readonly id: string;
   readonly sessionId: string;
   readonly objective: string;
   readonly status: CollaborationRunStatus;
   readonly round: number;
-  readonly budget: CollaborationRunBudget;
-  readonly participants: Record<string, Omit<Participant, "adapter">>;
+  readonly budget: RoleBasedRunBudget;
+  readonly policy: RunPolicy;
+  /** Explicit deterministic participant ordering */
+  readonly participantIds: string[];
+  /** O(1) indexed lookup of participant records */
+  readonly participantsById: Record<string, ParticipantRecord>;
   readonly activeParticipantId?: string;
-  readonly turnHistory: string[]; // List of CollaborationTurn IDs
+  readonly turnHistory: string[]; // List of CollaborationTurnRecord IDs
   readonly createdAt: string;
   readonly startedAt?: string;
   readonly completedAt?: string;
@@ -291,8 +303,8 @@ roles:
       permissionMode: "allow_readonly"
 
   implementer:
-    adapterType: "acp"
-    command: ["agy", "--acp"]
+    # Uses repository first-class Antigravity profile (agy-acp adapter bridging to agy CLI)
+    adapterType: "acp:antigravity"
     config:
       permissionMode: "deny"
 
@@ -307,11 +319,11 @@ roles:
 ```
 
 ### 5.2 Assignment Validation Rules
-Before any subprocess or session is spawned, the `RunController` validates:
+Before any subprocess or session is spawned, pure validation rules enforce:
 1. **Role Existence:** Every role referenced in `policy.roleSequence` exists in the `RoleRegistry`.
 2. **Assignment Completeness:** Every role in `policy.roleSequence` has an associated `ParticipantConfig`.
 3. **Budget Compliance:** The total count of configured participants does not exceed `budget.maxParticipants`.
-4. **Adapter Availability:** The specified adapter launch binaries exist on the host and pass pre-flight checks.
+4. **Structural Validity:** The specified adapter configuration possesses required fields (and valid launch commands if custom). Runtime binary discovery, PATH probing, and executable pre-flight checks occur during participant instantiation, keeping pure validation decoupled from the host filesystem.
 5. **Terminal Role Coverage:** At least one role in `policy.terminalRoles` is present in `policy.roleSequence`.
 
 ---
@@ -663,7 +675,7 @@ export interface ExternalAgentAdapter {
 
 Any external engine—whether:
 - Claude ACP (`acp:claude`)
-- Antigravity ACP (`acp` with `agy --acp`)
+- Antigravity ACP (`acp:antigravity` using `agy-acp`)
 - Future Codex Adapter (`codex` or `acp:codex`)
 - Custom Subprocess JSONL (`subprocess-jsonl`)
 
@@ -767,3 +779,51 @@ The P4 implementation suite will enforce the following deterministic test cases:
 - `test_no_external_transcript_mutation`: Verify external agents cannot alter prior transcript entries.
 - `test_audit_event_ordering`: Audit events for a 3-stage run appear in exact causal order (`collaboration.started` → `participant.assigned` → `participant.turn.started` → ... → `collaboration.completed`).
 - `test_session_isolation`: Turns executed by participant A cannot leak private context to participant B without passing through `RunController`.
+
+---
+
+## 21. Implementation Status Checklist
+
+### P4.0 — Types + Invariants
+- [x] Domain records (`ParticipantRecord`, `RoleBasedCollaborationRun`, `CollaborationTurnRecord`, etc.)
+- [x] Pure validators (`src/core/collaboration-validation.ts`)
+- [x] Deterministic test suite (`src/core/collaboration-validation.test.ts`)
+- [x] Backward compatibility with single-agent `CollaborationRun` preserved
+
+### P4.1 — Role Registry
+- [ ] `RoleRegistry` class
+- [ ] Built-in role definitions registered
+- [ ] Unit tests for role lookup and immutability
+
+### P4.2 — Explicit Participant Assignment
+- [ ] Configuration loader and parser
+- [ ] Participant factory and adapter binding
+- [ ] Structural assignment tests
+
+### P4.3 — Sequential Role Workflow
+- [ ] Multi-participant sequential turn loop in `RunController`
+- [ ] Hub-and-spoke handoff logic
+- [ ] Deterministic multi-participant turn tests
+
+### P4.4 — Canonical Transcript Integration
+- [ ] SQLite migration v2 (`participants`, `collaboration_turns`)
+- [ ] Canonical provenance logging with role IDs
+- [ ] Transcript query and projection tests
+
+### P4.5 — Cancellation & Failure Propagation
+- [ ] Participant-level cancellation propagation
+- [ ] Run-level cancellation teardown
+- [ ] Error escalation and retry budgets
+
+### P4.6 — Persistence / Resume
+- [ ] Run recovery on daemon startup
+- [ ] Idempotent run resumption
+- [ ] Interrupted turn reconciliation
+
+### P4.7 — Audit / Observability
+- [ ] Structured multi-participant audit event logging
+- [ ] Audit event sequence tests
+
+### P4.8 — Claude + Antigravity Live Collaboration
+- [ ] Live ACP multi-agent smoke test
+- [ ] Evidence capture in `docs/P4_COLLABORATION_SMOKE.md`
