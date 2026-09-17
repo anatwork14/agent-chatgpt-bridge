@@ -84,6 +84,7 @@ RunController external-agent side
                     +-- Cursor
                     +-- Gemini CLI
                     +-- Claude ACP
+                    +-- Antigravity
                     `-- custom ACP agent
 ```
 

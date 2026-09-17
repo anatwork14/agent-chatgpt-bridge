@@ -192,9 +192,10 @@ agent-chatgpt run \
 The native ACP adapter uses official ACP protocol framing rather than terminal scraping. Built-in launch profiles are:
 
 ```text
-cursor  -> agent acp
-gemini  -> gemini --acp
-claude  -> claude-agent-acp
+cursor       -> agent acp
+gemini       -> gemini --acp
+claude       -> claude-agent-acp
+antigravity  -> agy-acp
 ```
 
 See [`docs/agent-adapters.md`](docs/agent-adapters.md) for adapter semantics and [`docs/ACP_LIVE_SMOKE.md`](docs/ACP_LIVE_SMOKE.md) for the real-client P3 release gate.
@@ -207,6 +208,7 @@ After authenticating each client through its own login mechanism:
 bun run smoke:acp:live -- --profile cursor
 bun run smoke:acp:live -- --profile gemini
 bun run smoke:acp:live -- --profile claude
+bun run smoke:acp:live -- --profile antigravity
 ```
 
 Each run validates initialization, same-session two-round continuity, fail-closed mutation handling, in-flight cancellation, post-cancel recovery, and owned-process cleanup in an isolated temporary workspace.

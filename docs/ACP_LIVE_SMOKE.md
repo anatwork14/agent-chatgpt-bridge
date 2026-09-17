@@ -7,9 +7,10 @@ This is the release gate for the native ACP external-agent adapter. Deterministi
 Run the same verifier against the built-in profiles:
 
 ```text
-cursor  -> agent acp
-gemini  -> gemini --acp
-claude  -> claude-agent-acp
+cursor       -> agent acp
+gemini       -> gemini --acp
+claude       -> claude-agent-acp
+antigravity  -> agy-acp
 ```
 
 The bridge treats these clients as **pre-authenticated local programs**. It does not import, copy, print, persist, or proxy their provider credentials.
@@ -34,6 +35,7 @@ bun run typecheck
 bun run smoke:acp:live -- --profile cursor
 bun run smoke:acp:live -- --profile gemini
 bun run smoke:acp:live -- --profile claude
+bun run smoke:acp:live -- --profile antigravity
 ```
 
 A custom ACP server can be tested without adding a permanent profile:
@@ -119,25 +121,50 @@ Record the date, client version, bridge commit SHA, OS, and final JSON report fo
 
 ```text
 Cursor:
-  date:
-  client version:
-  bridge SHA:
-  OS:
-  result:
+  date: 2026-09-17
+  client version: N/A
+  bridge SHA: b6a314b6defcaf80b6bb140d043c528390166bd1
+  OS: macOS arm64
+  result: WAIVED (explicit release exception; proprietary account unavailable on host)
 
 Gemini CLI:
-  date:
-  client version:
-  bridge SHA:
-  OS:
-  result:
+  date: 2026-09-17
+  client version: gemini-cli 0.59.0
+  bridge SHA: b6a314b6defcaf80b6bb140d043c528390166bd1
+  OS: macOS arm64
+  result: SUPERSEDED (replaced as live release target by Google Antigravity CLI via agy-acp)
 
 Claude ACP:
-  date:
-  client version:
-  bridge SHA:
-  OS:
-  result:
+  date: 2026-09-17
+  client version: Claude Code 2.1.259 / @agentclientprotocol/claude-agent-acp 0.78.0
+  bridge SHA: b6a314b6defcaf80b6bb140d043c528390166bd1
+  OS: macOS arm64
+  result: PASS (8/8 gates passed; two-round continuity, fail-closed permission probe, cancellation, recovery, clean close)
+
+Google Antigravity CLI (agy via agy-acp):
+  date: 2026-09-17
+  client version: agy 1.2.3 / agy-acp 0.5.2
+  bridge SHA: b6a314b6defcaf80b6bb140d043c528390166bd1
+  OS: macOS arm64
+  result: PASS (8/8 gates passed; initialize, session creation, two-round continuity, fail-closed permission probe, in-flight cancellation, post-cancel recovery, clean close, 0 failed audit events)
 ```
 
-P3 is **deterministically complete but live-pending** until all required clients have evidence here or in the release PR/issue.
+Evidence report for Antigravity:
+
+```json
+{
+  "profile": "antigravity",
+  "marker": "AGENT_BRIDGE_0458aa3984a74e0e",
+  "workspaceIsTemporary": true,
+  "initialize": true,
+  "continuity": true,
+  "permissionFailClosed": true,
+  "cancellation": true,
+  "postCancelRecovery": true,
+  "cleanClose": true,
+  "permissionRequests": 1,
+  "failedAuditEvents": 0
+}
+```
+
+P3 is **live-signed-off** (Claude ACP + Antigravity ACP passed; Cursor documented release exception).

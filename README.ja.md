@@ -192,9 +192,10 @@ agent-chatgpt run \
 ネイティブ ACP アダプターは、ターミナルスクレイピングではなく公式の ACP プロトコルフレーミングを使用します。組み込み起動プロファイルは以下の通りです:
 
 ```text
-cursor  -> agent acp
-gemini  -> gemini --acp
-claude  -> claude-agent-acp
+cursor       -> agent acp
+gemini       -> gemini --acp
+claude       -> claude-agent-acp
+antigravity  -> agy-acp
 ```
 
 アダプターのセマンティクスについては [`docs/agent-adapters.md`](docs/agent-adapters.md) を、実クライアント P3 リリースゲートについては [`docs/ACP_LIVE_SMOKE.md`](docs/ACP_LIVE_SMOKE.md) を参照してください。
@@ -207,6 +208,7 @@ claude  -> claude-agent-acp
 bun run smoke:acp:live -- --profile cursor
 bun run smoke:acp:live -- --profile gemini
 bun run smoke:acp:live -- --profile claude
+bun run smoke:acp:live -- --profile antigravity
 ```
 
 各実行は、隔離された一時ワークスペースで初期化、同一セッション 2 ラウンド継続性、fail-closed な変更処理、実行中キャンセル、キャンセル後リカバリ、および所有プロセスのクリーンアップを検証します。

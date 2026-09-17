@@ -2,7 +2,7 @@ import type { AcpAgentProfile } from "./types";
 
 export type { AcpAgentProfile } from "./types";
 
-export const ACP_AGENT_PROFILES: Readonly<Record<"cursor" | "gemini" | "claude", AcpAgentProfile>> = {
+export const ACP_AGENT_PROFILES: Readonly<Record<"cursor" | "gemini" | "claude" | "antigravity", AcpAgentProfile>> = {
   cursor: {
     id: "cursor",
     command: ["agent", "acp"],
@@ -16,6 +16,11 @@ export const ACP_AGENT_PROFILES: Readonly<Record<"cursor" | "gemini" | "claude",
   claude: {
     id: "claude",
     command: ["claude-agent-acp"],
+    authMode: "preauthenticated",
+  },
+  antigravity: {
+    id: "antigravity",
+    command: ["agy-acp"],
     authMode: "preauthenticated",
   },
 };

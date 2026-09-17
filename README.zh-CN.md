@@ -192,9 +192,10 @@ agent-chatgpt run \
 原生 ACP 适配器使用官方 ACP 协议帧，而非终端抓取。内置启动 profile 为：
 
 ```text
-cursor  -> agent acp
-gemini  -> gemini --acp
-claude  -> claude-agent-acp
+cursor       -> agent acp
+gemini       -> gemini --acp
+claude       -> claude-agent-acp
+antigravity  -> agy-acp
 ```
 
 关于适配器语义请参见 [`docs/agent-adapters.md`](docs/agent-adapters.md)，关于真实客户端 P3 发布门禁请参见 [`docs/ACP_LIVE_SMOKE.md`](docs/ACP_LIVE_SMOKE.md)。
@@ -207,6 +208,7 @@ claude  -> claude-agent-acp
 bun run smoke:acp:live -- --profile cursor
 bun run smoke:acp:live -- --profile gemini
 bun run smoke:acp:live -- --profile claude
+bun run smoke:acp:live -- --profile antigravity
 ```
 
 每次运行均在隔离的临时工作区中验证初始化、同会话两轮连续性、fail-closed 变更处理、执行中取消、取消后恢复以及所拥有的进程清理。
