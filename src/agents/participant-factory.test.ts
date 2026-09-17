@@ -17,6 +17,10 @@ import {
 } from "./participant-factory";
 import { AcpAgentAdapter } from "./acp/adapter";
 import { SubprocessJsonlAdapter } from "./subprocess-jsonl";
+import { RunController } from "../core/run-controller";
+import { BridgeError } from "../core/errors";
+import { InMemoryRoleBasedRunPersistence } from "../core/collaboration-persistence";
+import type { ExternalAgentAdapter, AgentDecision } from "../core/domain";
 
 function createStandardRegistry(): RoleRegistry {
   return new RoleRegistry(BUILTIN_ROLE_DEFINITIONS);
@@ -298,6 +302,124 @@ describe("P4.2 Participant Factory & Adapter Binding", () => {
 
       expect(runtime.adapter).not.toBe(initialAdapter);
       expect(runtime.adapter).toBeInstanceOf(AcpAgentAdapter);
+    });
+
+    it("production-shaped adapter recreation through real factory and RunController", async () => {
+      class FakeRunStore {
+        private readonly runs = new Map<string, any>();
+        create(run: any) { this.runs.set(run.id, { ...run }); }
+        get(id: string) { return this.runs.get(id) ?? null; }
+        update(id: string, patch: any) {
+          const cur = this.runs.get(id);
+          if (cur) Object.assign(cur, patch);
+        }
+      }
+
+      class FakeSessionManager {
+        async get(id: string) {
+          return { id, status: "active", turns: [], createdAt: new Date().toISOString() };
+        }
+        async cancel() { return true; }
+      }
+
+      class FakeAuditStore {
+        public readonly events: any[] = [];
+        log(event: any) { this.events.push(event); }
+      }
+
+      const registry = createStandardRegistry();
+      const config: CollaborationConfig = {
+        objective: "Production-shaped recreation test",
+        budget: { maxRetriesPerParticipant: 2 },
+        policy: {
+          roleSequence: ["architect"],
+          loopMode: "once",
+          terminalRoles: ["architect"],
+        },
+        roles: {
+          architect: { adapterType: "acp:claude" },
+        },
+      };
+
+      let instancesCreated = 0;
+      let adapter1Closed = false;
+      let adapter2Initialized = false;
+
+      class TestMockAdapter implements ExternalAgentAdapter {
+        public readonly id: string;
+        public readonly instanceNum: number;
+        public closed = false;
+        public initialized = false;
+
+        constructor(instanceNum: number) {
+          this.instanceNum = instanceNum;
+          this.id = `mock-adapter-${instanceNum}`;
+        }
+
+        async initialize(): Promise<void> {
+          this.initialized = true;
+          if (this.instanceNum === 2) {
+            adapter2Initialized = true;
+          }
+        }
+
+        async next(): Promise<AgentDecision> {
+          if (this.instanceNum === 1) {
+            throw new BridgeError("agent_adapter_failed", "Process crash on instance 1", true);
+          }
+          return { type: "done", summary: "Instance 2 succeeded" };
+        }
+
+        async close(): Promise<void> {
+          this.closed = true;
+          if (this.instanceNum === 1) {
+            adapter1Closed = true;
+          }
+        }
+      }
+
+      // Use real prepareParticipants with custom factory returning new TestMockAdapter instances
+      const prepared = prepareParticipants(config, registry, {
+        locator: fakeLocator,
+        factory: (_cfg) => {
+          instancesCreated++;
+          return new TestMockAdapter(instancesCreated);
+        },
+      });
+
+      const initialRuntime = prepared.runtimes[0]!;
+      const initialAdapter = initialRuntime.adapter as TestMockAdapter;
+      expect(initialAdapter.instanceNum).toBe(1);
+      expect(Object.isSealed(initialRuntime)).toBe(true);
+
+      const controller = new RunController(
+        new FakeRunStore() as any,
+        new FakeSessionManager() as any,
+        new FakeAuditStore() as any,
+        () => { throw new Error("not called"); },
+        new InMemoryRoleBasedRunPersistence(),
+      );
+
+      const result = await controller.executeRoleBasedRun("ses_test", config, prepared);
+
+      expect(instancesCreated).toBe(2);
+      expect(adapter1Closed).toBe(true);
+      expect(adapter2Initialized).toBe(true);
+      expect(result.run.status).toBe("completed");
+      expect(result.run.finalSummary).toBe("Instance 2 succeeded");
+
+      // Assertions required by Section 4:
+      // same participantId
+      expect(initialRuntime.participantId).toBe(prepared.plans[0]!.participantId);
+      // same roleId
+      expect(initialRuntime.roleId).toBe("architect");
+      // same adapterId
+      expect(initialRuntime.adapterId).toBe("acp:claude");
+      // same ParticipantConfig
+      expect(prepared.plans[0]!.config).toEqual({ adapterType: "acp:claude" });
+      // different adapter object allowed
+      expect(initialRuntime.adapter).not.toBe(initialAdapter);
+      expect((initialRuntime.adapter as TestMockAdapter).instanceNum).toBe(2);
     });
   });
 

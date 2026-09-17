@@ -1,5 +1,5 @@
 import { expect, test, beforeEach, afterEach } from "bun:test";
-import { initDatabase, closeDatabase } from "./database";
+import { initDatabase, closeDatabase, getDatabase } from "./database";
 import { RoleBasedRunStore } from "./role-based-run-store";
 import { CollaborationParticipantStore } from "./collaboration-participant-store";
 import { CollaborationTurnStore } from "./collaboration-turn-store";
@@ -459,6 +459,13 @@ test("RoleBasedRunStore.update patch semantics: concrete vs null vs omitted", ()
   expect(afterActiveNull?.finalSummary).toBe("Initial summary text");
   expect(afterActiveNull?.completedAt).toBe("2026-09-17T00:01:00Z");
 
+  const rawRow2 = getDatabase()
+    .prepare("SELECT active_participant_id, final_summary, completed_at FROM role_based_runs WHERE id = ?")
+    .get(runId) as any;
+  expect(rawRow2.active_participant_id).toBeNull();
+  expect(rawRow2.final_summary).toBe("Initial summary text");
+  expect(rawRow2.completed_at).toBe("2026-09-17T00:01:00Z");
+
   // 3. Explicit null clears finalSummary and completedAt
   runStore.update(runId, {
     finalSummary: null,
@@ -468,12 +475,26 @@ test("RoleBasedRunStore.update patch semantics: concrete vs null vs omitted", ()
   expect(afterAllNull?.finalSummary).toBeUndefined();
   expect(afterAllNull?.completedAt).toBeUndefined();
 
+  const rawRow3 = getDatabase()
+    .prepare("SELECT active_participant_id, final_summary, completed_at FROM role_based_runs WHERE id = ?")
+    .get(runId) as any;
+  expect(rawRow3.active_participant_id).toBeNull();
+  expect(rawRow3.final_summary).toBeNull();
+  expect(rawRow3.completed_at).toBeNull();
+
   // 4. Concrete value sets activeParticipantId again
   runStore.update(runId, {
     activeParticipantId: "part_new_active",
   });
   const afterNewActive = runStore.get(runId);
   expect(afterNewActive?.activeParticipantId).toBe("part_new_active");
+
+  const rawRow4 = getDatabase()
+    .prepare("SELECT active_participant_id, final_summary, completed_at FROM role_based_runs WHERE id = ?")
+    .get(runId) as any;
+  expect(rawRow4.active_participant_id).toBe("part_new_active");
+  expect(rawRow4.final_summary).toBeNull();
+  expect(rawRow4.completed_at).toBeNull();
 });
 
 test("RoleBasedRunStore.update enforces terminal state immutability in SQLite", () => {
