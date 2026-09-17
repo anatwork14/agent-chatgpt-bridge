@@ -1,0 +1,247 @@
+# Implementation Progress
+
+Last updated: 2026-09-17
+
+This file is evidence-based. A milestone is not marked live-complete only because unit tests or CI pass.
+
+## Current release state
+
+```text
+P0 universal bridge/session foundation        DONE
+P1 codex-router provider plane                DONE + LIVE SIGN-OFF
+P2 provider health / explicit routing policy DONE + CI VALIDATED
+P3 native ACP external-agent adapter          IMPLEMENTED + CI GREEN + LIVE SIGN-OFF COMPLETE
+P3 real ACP interoperability                  DONE + LIVE SIGN-OFF
+P4 role-based collaboration                   NOT STARTED
+P5 bounded collaboration DAG                  NOT STARTED
+```
+
+The active consolidation branch is `release/p3-hardening`. It connects the previously orphaned feature-stack history to `main` with a two-parent integration commit while preserving the complete P1 -> P2 -> P3 ancestry. The older stacked PRs remain available as implementation history until the consolidation PR is accepted.
+
+## Completed foundation
+
+- Upstream baseline imported and pinned.
+- Generic bridge domain types and `ConversationProvider` abstraction.
+- Real ChatGPT Web provider facade around the upstream adapter.
+- Account-aware model discovery.
+- Persistent `SessionManager` and canonical SQLite transcript.
+- Terminal turn persistence and interrupted-turn recovery.
+- Session isolation and serialization.
+- Cancellation propagation and browser-owner retirement for explicit bridge cancellation.
+- Local content/attachment policy.
+- Turn scheduling and bounded concurrency primitives.
+- REST `/bridge/v1` API with SSE and bearer-token protection.
+- Idempotency for supported non-streaming mutations.
+- Agent -> ChatGPT MCP tools with stdio lifetime ownership.
+- Strict subprocess JSONL external-agent adapter.
+- Bounded autonomous collaboration controller.
+- Runtime-home SQLite integration.
+- Cross-platform CI verification/package/smoke coverage.
+- Upstream Codex compatibility retained.
+
+## P1 — codex-router provider plane
+
+Final signed-off head:
+
+```text
+c8ee167ab15a5dd537a13d3c714e142acc59ce3f
+```
+
+Implemented:
+
+- optional downstream `codex-router` provider through the OpenAI Responses boundary;
+- namespaced `codex-router/<model-id>` discovery with no silent fallback;
+- loopback-only endpoint policy by default and recursive bridge-route prevention;
+- cancellation and explicit rate-limit/error propagation;
+- capability-URL redaction;
+- canonical bridge history across multi-turn routed sessions;
+- real child-process integration and pinned real codex-router process coverage;
+- SSE CRLF split-boundary hardening;
+- packaged-app smoke on macOS, Ubuntu, and Windows.
+
+P1 CI run #185 / `34747263537` passed the full matrix.
+
+Live validation completed:
+
+```text
+[x] production ChatGPT Web authenticated
+[x] independent ChatGPT turn
+[x] persistent-session marker recovery
+[x] direct real codex-router smoke
+[x] ChatGPT Web and codex-router namespaces
+[x] routed turn and same-session semantic continuity
+[x] routed transcript persistence
+[x] provider/model pinning
+[x] capability/secret leak inspection
+[x] routed downstream cancellation
+[x] ChatGPT/router coexistence
+[x] two-session isolation
+[x] ChatGPT cancellation cleanup + same-session reuse
+[x] MCP create / ask / continue
+[x] autonomous relay >= 2 rounds + bounded termination
+[x] restart reconstruction / continuity
+```
+
+A genuine provider-side 429 was intentionally not manufactured because paid-account exhaustion is not a safe validation technique.
+
+**P1 LIVE SIGN-OFF: YES**
+
+## P2 — provider health and explicit routing policy
+
+Final stacked P2 head before P3:
+
+```text
+77c1de144dfd8509be8aee885903af688591d8a2
+```
+
+Implemented:
+
+- bridge-level provider health states: `healthy`, `unavailable`, `rate_limited`, `cooldown`, `misconfigured`;
+- secret-safe health observations for discovery, validation, turns, and explicit policy state;
+- authenticated read-only `/bridge/v1/providers/health` endpoint;
+- fallback disabled by default;
+- explicitly ordered fallback with explicit trigger states only;
+- no opportunistic retry/mid-turn migration;
+- optional rate-limit cooldown with deterministic expiry semantics;
+- shared health enforcement for direct-provider and model-router traffic;
+- route decisions persisted before provider execution, with audit failure fail-closed;
+- no persistent session provider/model migration on fallback;
+- explicit fallback-model validation before execution;
+- structured `BridgeError` preservation in terminal turn persistence;
+- startup policy validation before bridge-owned SQLite is opened;
+- concrete-provider cancellation preserved through routing wrappers.
+
+The combined P1+P2 stack passed the full macOS/Linux/Windows CI/package/smoke matrix.
+
+**P2 DETERMINISTIC SIGN-OFF: YES**
+
+## P3 — native ACP external-agent adapter
+
+Current P3 implementation head before release hardening:
+
+```text
+ec4c7f3ea888ff8a904d98847f8da33b4e1fe959
+```
+
+CI run #191 / `34767691106` completed successfully on that head.
+
+Implemented:
+
+- generic ACP v1 adapter using `@agentclientprotocol/sdk` 1.4.0;
+- built-in profiles for Cursor (`agent acp`), Gemini CLI (`gemini --acp`), and Claude ACP (`claude-agent-acp`);
+- custom ACP command profile;
+- persistent owned subprocess and ACP session across collaboration rounds;
+- streaming agent-message collection;
+- cancellation via ACP `session/cancel` plus bounded process cleanup;
+- prompt timeout and protocol-output bounds;
+- default-deny permission handling with optional read-only/delegated policy;
+- filesystem, terminal, and elicitation client callbacks disabled by default;
+- safe environment inheritance rather than wholesale parent-process credential inheritance;
+- structured ACP audit events;
+- deterministic fake ACP coverage for initialize/session/prompt/cancel/permission/close behavior;
+- prompt process-exit detection and orphan cleanup hardening.
+
+Release hardening added on `release/p3-hardening`:
+
+- repository/package metadata corrected to identify Agent Bridge rather than upstream `codex-chatgpt-web`;
+- README/product architecture synchronized through P3;
+- repeatable `bun run smoke:acp:live` verifier;
+- isolated temporary workspace for mutation/permission probes;
+- two-round marker continuity check;
+- in-flight cancellation and post-cancel recovery check;
+- clean-close/audit evidence output;
+- `docs/ACP_LIVE_SMOKE.md` runbook and sign-off record.
+
+### P3 live gates and sign-off
+
+The live verifier exercises real authenticated clients:
+
+```bash
+bun run smoke:acp:live -- --profile cursor
+bun run smoke:acp:live -- --profile gemini
+bun run smoke:acp:live -- --profile claude
+bun run smoke:acp:live -- --profile antigravity
+```
+
+Required evidence per client:
+
+```text
+[x] initialize and session/new succeed
+[x] round 1 -> round 2 semantic/marker continuity
+[x] permission/mutation probe remains fail-closed
+[x] in-flight cancellation surfaces client_cancelled
+[x] same-session post-cancel recovery succeeds
+[x] close leaves no owned orphan process
+[x] no agent.acp.failed audit event
+[x] no provider credential material is emitted by the bridge
+```
+
+Live status by client:
+- **Claude ACP (`claude-agent-acp`)**: `PASS` (full 8-gate lifecycle validated on macOS).
+- **Google Antigravity CLI (`agy` via `agy-acp`)**: `PASS` (full 8-gate lifecycle validated on macOS; native Antigravity CLI integration through ACP adapter).
+- **Cursor (`agent acp`)**: Documented release exception (unsupported without proprietary account).
+- **Gemini CLI (`gemini --acp`)**: Legacy live path superseded by Google Antigravity CLI via ACP adapter.
+- **Codex**: Validated through separate non-ACP provider paths; P4 external adapter tracked under issue #7.
+
+**P3 DETERMINISTIC SIGN-OFF: YES**
+
+**P3 LIVE SIGN-OFF: YES (Claude ACP + Antigravity ACP complete; Cursor release exception documented)**
+
+## Integration topology
+
+The original repository `main` history did not share an ancestor with the feature stack. The release-hardening branch fixes that without force-pushing or rewriting either history:
+
+```text
+main (initial repository history) -----------+
+                                             \
+                                              merge -> release/p3-hardening
+                                             /
+P0 -> P1 -> P2 -> P3 -----------------------+
+```
+
+The integration commit reuses the exact P3 tree as its content and records both `main` and the P3 head as parents. Subsequent hardening commits are normal descendants. This makes a single reviewable PR to `main` possible while preserving implementation provenance.
+
+## Merge/release sequencing
+
+1. Keep the consolidation PR in draft while the hardening CI matrix runs.
+2. Resolve any deterministic regression on `release/p3-hardening`.
+3. Run the three real-client ACP smoke commands and attach evidence.
+4. Mark P3 live-signed-off only when all required gates pass or an explicit documented exception is accepted.
+5. Merge the consolidation PR to `main`.
+6. Close/supersede the old stacked PRs only after the consolidated merge is complete.
+7. Begin P4 from the merged release baseline; do not develop role policy on the old stack branches.
+
+## Definition-of-done tracking
+
+```text
+[x] generic session creation
+[x] canonical persisted transcript
+[x] multi-session isolation
+[x] REST + SSE
+[x] cancellation primitives
+[x] SQLite persistence
+[x] CLI
+[x] MCP + real stdio lifetime regression
+[x] strict subprocess JSONL adapter
+[x] bounded autonomous relay
+[x] local bearer-token boundary
+[x] fail-closed provider terminal handling
+[x] upstream Codex compatibility
+[x] codex-router provider plane and namespace
+[x] real codex-router child-process integration
+[x] P1 deterministic cross-platform CI
+[x] P1 live sign-off
+[x] P2 provider-health state machine
+[x] P2 explicit-only fallback/cooldown/auditable routing
+[x] P2 combined cross-platform CI
+[x] P3 ACP adapter implementation
+[x] P3 deterministic ACP tests
+[x] P3 cross-platform CI #191
+[x] P3 live verifier/runbook
+[x] P3 live Cursor interoperability (documented release exception)
+[x] P3 live Antigravity ACP interoperability
+[x] P3 live Claude ACP interoperability
+[x] P3 live sign-off
+[ ] P4 role-based collaboration
+[ ] P5 bounded multi-participant DAG
+```

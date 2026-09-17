@@ -1,0 +1,129 @@
+name: Bug report
+description: Report one reproducible Agent Bridge failure with privacy-safe diagnostics.
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Reproduce the failure on the current Agent Bridge revision when possible. Never upload cookies, browser storage, API keys, OAuth tokens, capability URLs, raw private prompts, or unredacted provider logs.
+
+  - type: input
+    id: bridge-version
+    attributes:
+      label: Agent Bridge version / commit
+      description: Provide the release version or exact commit SHA.
+      placeholder: 5.0.6 / abc1234
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Session / transcript / persistence
+        - Routing / provider health / fallback policy
+        - ChatGPT Web provider
+        - codex-router provider plane
+        - ACP - Cursor
+        - ACP - Gemini CLI
+        - ACP - Claude
+        - ACP - custom agent
+        - JSONL external-agent adapter
+        - REST / Responses API
+        - MCP
+        - CLI
+        - Bounded collaboration / RunController
+        - Launcher / packaging
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS arm64
+        - macOS x64
+        - Windows x64
+        - Linux x64
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version
+      placeholder: macOS 15.x / Windows 11 / Ubuntu 24.04
+    validations:
+      required: true
+
+  - type: input
+    id: dependency-version
+    attributes:
+      label: Provider / agent / client version
+      description: For interoperability bugs, include the exact Cursor, Gemini, Claude ACP, codex-router, Codex, or other client version. Write "not applicable" otherwise.
+      placeholder: Cursor CLI ..., Gemini CLI ..., claude-agent-acp ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the observed result and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Number the smallest reliable sequence. Include the command/profile/API surface but redact credentials.
+      placeholder: |
+        1. …
+        2. …
+        3. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: exact-error
+    attributes:
+      label: Complete final error
+      description: Include the final structured error or failure message after removing private content.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Privacy-safe evidence
+      description: Include relevant audit event names, test output, live-smoke JSON, or CI link. Do not include credentials or raw private provider/browser state.
+    validations:
+      required: true
+
+  - type: textarea
+    id: configuration
+    attributes:
+      label: Relevant configuration
+      description: Name the provider/profile/model/permission mode/fallback policy involved. Redact capability URLs and secrets.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Preflight checklist
+      options:
+        - label: I reproduced this on the current release/branch or explained why I could not.
+          required: true
+        - label: I removed credentials, capability URLs, browser state, private paths, and private prompt/output content from the report.
+          required: true
+        - label: For ACP interoperability bugs, I checked `docs/ACP_LIVE_SMOKE.md` and included the client version and live-smoke result where possible.
+          required: true
+        - label: I searched existing issues for this exact failure.
+          required: true
