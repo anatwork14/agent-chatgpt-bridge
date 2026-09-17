@@ -1,5 +1,5 @@
 name: Feature request
-description: Propose one focused addition that fits the ChatGPT Web-backed Codex architecture.
+description: Propose a focused improvement to the provider-agnostic Agent Bridge collaboration runtime.
 title: "[Feature] "
 labels:
   - enhancement
@@ -7,13 +7,13 @@ body:
   - type: markdown
     attributes:
       value: |
-        Large rewrites, generic provider routing, and unrelated product surfaces are normally out of scope. Please describe the user problem before proposing an implementation.
+        Agent Bridge owns persistent collaboration sessions, provider/agent routing, bounded workflows, permissions, protocol surfaces, persistence, and auditability. Provider credential management belongs to the provider/router/client; ARC remains the execution plane and CompanyOS the coordination/product layer.
 
   - type: textarea
     id: problem
     attributes:
-      label: User problem
-      description: What concrete workflow is blocked today, and who encounters it?
+      label: User or system problem
+      description: What concrete collaboration/runtime workflow is blocked today, and who encounters it?
     validations:
       required: true
 
@@ -21,7 +21,7 @@ body:
     id: current-workflow
     attributes:
       label: Current workflow or workaround
-      description: Explain what users do today and why it is insufficient.
+      description: Explain what users/agents do today and why it is insufficient.
     validations:
       required: true
 
@@ -29,7 +29,7 @@ body:
     id: proposed-behavior
     attributes:
       label: Proposed behavior
-      description: Describe the smallest observable product behavior that would solve the problem.
+      description: Describe the smallest observable behavior that would solve the problem.
     validations:
       required: true
 
@@ -38,11 +38,17 @@ body:
     attributes:
       label: Primary surface
       options:
-        - Browser-only model turn
-        - Full harness / MCP
-        - Launcher setup or diagnostics
-        - Codex integration / model catalog
-        - Packaging or installer
+        - Sessions / transcript / persistence
+        - Provider routing / health / fallback policy
+        - ChatGPT Web provider
+        - codex-router provider plane
+        - ACP external-agent adapter
+        - JSONL external-agent adapter
+        - REST / Responses API
+        - MCP
+        - CLI
+        - Bounded collaboration / roles / policy
+        - Launcher / packaging
         - Documentation
         - Other
     validations:
@@ -51,19 +57,27 @@ body:
   - type: textarea
     id: boundaries
     attributes:
-      label: Safety and compatibility boundaries
-      description: Note any account limits, browser automation, credential, routing, platform, or fail-closed implications.
+      label: Architecture and security boundaries
+      description: Note provider ownership, credentials, permissions, filesystem/terminal access, cancellation, persistence, audit, budget, or fail-closed implications.
     validations:
       required: true
+
+  - type: textarea
+    id: interoperability
+    attributes:
+      label: Provider / agent interoperability
+      description: If relevant, name the provider or agent, protocol, client version, and OS that motivate the request.
 
   - type: checkboxes
     id: checks
     attributes:
       label: Scope checklist
       options:
-        - label: I searched existing issues and Discussions for this request.
+        - label: I searched existing issues and pull requests for this request.
           required: true
-        - label: This request does not rely on bypassing authentication, access controls, or account limits.
+        - label: The proposal does not rely on bypassing authentication, access controls, provider limits, or permission boundaries.
+          required: true
+        - label: The proposal keeps provider credentials with the system that owns them rather than moving them into Agent Bridge.
           required: true
         - label: I understand that opening an issue does not guarantee implementation or acceptance of a pull request.
           required: true
