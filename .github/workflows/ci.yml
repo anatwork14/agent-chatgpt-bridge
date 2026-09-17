@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate launcher installer with Windows PowerShell 5.1
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          if ($PSVersionTable.PSVersion.Major -ne 5) {
+            throw "Expected Windows PowerShell 5.1, got $($PSVersionTable.PSVersion)"
+          }
+          $source = Get-Content scripts/install-launcher.ps1 -Raw
+          [void][scriptblock]::Create($source)
+          if ($source.Contains("IsPathFullyQualified")) {
+            throw "The Windows PowerShell 5.1 installer cannot use the .NET Core-only IsPathFullyQualified API"
+          }
+          if (-not [Environment]::Is64BitOperatingSystem) {
+            throw "The Windows CI runner must be 64-bit"
+          }
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: launcher
+      - name: Prepare AVX2-independent Windows runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/prepare-windows-baseline-bun.ps1 -Version 1.4.0 -GitHubEnv $env:GITHUB_ENV
+      - name: Prepare compatible Linux libnotify
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build pkg-config libglib2.0-dev libgdk-pixbuf-2.0-dev binutils
+          ./scripts/prepare-linux-libnotify.sh
+      - name: Prepare owned AppImage toolset
+        if: runner.os == 'Linux'
+        run: bun run launcher/scripts/prepare-linux-appimage-tools.cjs
+      - run: bun run verify
+      - run: bun run app:package
+      - name: Verify Linux AppImage ABI on current Arch
+        if: runner.os == 'Linux'
+        run: |
+          artifact="$(find launcher/artifacts -maxdepth 1 -name '*-linux-x64.AppImage' -print -quit)"
+          test -n "$artifact"
+          docker run --rm -v "$PWD:/work:ro" -e APPIMAGE_PATH="/work/$artifact" archlinux:base \
+            sh -lc 'pacman -Sy --noconfirm binutils file glibc alsa-lib at-spi2-core cairo cups gtk3 libx11 libxcb libxcomposite libxdamage libxext libxfixes libxkbcommon libxrandr mesa nspr nss pango >/dev/null && /work/launcher/scripts/smoke-linux-appimage-symbols.sh "$APPIMAGE_PATH"'
+      - name: Ensure virtual display is available
+        if: runner.os == 'Linux'
+        run: command -v xvfb-run || (sudo apt-get update && sudo apt-get install -y xvfb)
+      - run: bun run app:smoke
+
+  codex-router-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Agent ChatGPT Bridge
+        uses: actions/checkout@v6
+      - name: Checkout pinned codex-router fixture
+        uses: actions/checkout@v6
+        with:
+          repository: duolahypercho/codex-router
+          ref: a71312d75284872d62b27f3e0ce8e21df6fa125c
+          path: .codex-router-fixture
+          persist-credentials: false
+      - name: Set up Node for codex-router
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.19.0"
+          cache: npm
+          cache-dependency-path: .codex-router-fixture/package-lock.json
+      - name: Install pinned codex-router runtime dependencies
+        working-directory: .codex-router-fixture
+        run: npm ci --omit=dev --ignore-scripts
+      - name: Set up Bun for bridge verifier
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Install bridge dependencies
+        run: bun install --frozen-lockfile
+      - name: Run real codex-router process integration
+        env:
+          CODEX_ROUTER_REPO_DIR: ${{ github.workspace }}/.codex-router-fixture
+        run: bun run scripts/verify-real-codex-router.ts
+
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          cache: false
+      - name: Lint GitHub Actions
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -config-file .github/actionlint.yaml .github/workflows/*.yml
