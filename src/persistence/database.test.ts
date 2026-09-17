@@ -8,19 +8,25 @@ import os from "node:os";
 const testDbPath = path.join(os.tmpdir(), `test-bridge-${Date.now()}.db`);
 const upgradeDbPath = path.join(os.tmpdir(), `test-upgrade-${Date.now()}.db`);
 
+function safeUnlink(p: string): void {
+  try {
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  } catch {
+    // Windows file locks may linger briefly on temporary test files
+  }
+}
+
 afterEach(() => {
   closeDatabase();
   for (const p of [testDbPath, upgradeDbPath]) {
-    if (fs.existsSync(p)) {
-      fs.unlinkSync(p);
-      if (fs.existsSync(p + "-wal")) fs.unlinkSync(p + "-wal");
-      if (fs.existsSync(p + "-shm")) fs.unlinkSync(p + "-shm");
-    }
+    safeUnlink(p);
+    safeUnlink(p + "-wal");
+    safeUnlink(p + "-shm");
   }
 });
 
 test("Database initializes correctly with all tables (legacy and v2)", () => {
-  const db = initDatabase(testDbPath);
+  const db = initDatabase(":memory:");
 
   const tablesResult = db.query(`SELECT name FROM sqlite_master WHERE type='table'`).all() as { name: string }[];
   const tables = tablesResult.map(t => t.name);
@@ -49,7 +55,7 @@ test("Database initializes correctly with all tables (legacy and v2)", () => {
 });
 
 test("Database migration v2 indexes exist", () => {
-  const db = initDatabase(testDbPath);
+  const db = initDatabase(":memory:");
   const indexesResult = db.query(`SELECT name FROM sqlite_master WHERE type='index'`).all() as { name: string }[];
   const indexes = indexesResult.map(i => i.name);
 
@@ -82,7 +88,7 @@ test("Database migration re-open is idempotent", () => {
 });
 
 test("Database foreign keys fail closed on invalid references", () => {
-  const db = initDatabase(testDbPath);
+  const db = initDatabase(":memory:");
 
   // Turn cannot reference nonexistent run or participant
   expect(() => {
@@ -230,4 +236,5 @@ test("Database crash-state recovery", () => {
   expect(result).toBeTruthy();
   expect((result as any).id).toBe("ses_1");
   db2.close();
+  closeDatabase();
 });

@@ -890,7 +890,11 @@ describe("P4.3 Role-Based RunController Orchestration", () => {
     } finally {
       closeDatabase();
       for (const p of [runDbPath, runDbPath + "-wal", runDbPath + "-shm"]) {
-        if (fs.existsSync(p)) fs.unlinkSync(p);
+        try {
+          if (fs.existsSync(p)) fs.unlinkSync(p);
+        } catch {
+          // Lingering file locks on Windows temporary test files are safely ignored
+        }
       }
     }
   });

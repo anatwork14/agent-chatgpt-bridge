@@ -18,14 +18,9 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-const testDbPath = path.join(os.tmpdir(), `test-p4-stores-${Date.now()}.db`);
-
 beforeEach(() => {
   closeDatabase();
-  for (const p of [testDbPath, testDbPath + "-wal", testDbPath + "-shm"]) {
-    if (fs.existsSync(p)) fs.unlinkSync(p);
-  }
-  const db = initDatabase(testDbPath);
+  const db = initDatabase(":memory:");
   db.exec(`
     INSERT INTO sessions (id, provider, model, status, created_at, updated_at)
     VALUES ('ses_store_test', 'chatgpt-web', 'gpt-4', 'active', '2026-09-17T00:00:00Z', '2026-09-17T00:00:00Z');
@@ -34,9 +29,6 @@ beforeEach(() => {
 
 afterEach(() => {
   closeDatabase();
-  for (const p of [testDbPath, testDbPath + "-wal", testDbPath + "-shm"]) {
-    if (fs.existsSync(p)) fs.unlinkSync(p);
-  }
 });
 
 const defaultBudget: RoleBasedRunBudget = {

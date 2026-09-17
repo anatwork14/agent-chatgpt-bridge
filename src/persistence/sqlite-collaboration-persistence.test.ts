@@ -17,14 +17,9 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-const tempDbPath = path.join(os.tmpdir(), `test-p4-durability-${Date.now()}.db`);
-
 beforeEach(() => {
   closeDatabase();
-  for (const p of [tempDbPath, tempDbPath + "-wal", tempDbPath + "-shm"]) {
-    if (fs.existsSync(p)) fs.unlinkSync(p);
-  }
-  const db = initDatabase(tempDbPath);
+  const db = initDatabase(":memory:");
   db.exec(`
     INSERT INTO sessions (id, provider, model, status, created_at, updated_at)
     VALUES ('ses_p4_durability', 'chatgpt-web', 'gpt-4', 'active', '2026-09-17T00:00:00Z', '2026-09-17T00:00:00Z');
@@ -33,9 +28,6 @@ beforeEach(() => {
 
 afterEach(() => {
   closeDatabase();
-  for (const p of [tempDbPath, tempDbPath + "-wal", tempDbPath + "-shm"]) {
-    if (fs.existsSync(p)) fs.unlinkSync(p);
-  }
 });
 
 const defaultBudget: RoleBasedRunBudget = {
@@ -399,122 +391,144 @@ test("SqliteCollaborationPersistence: tamper detection triggers integrity failur
 });
 
 test("SqliteCollaborationPersistence: disk restart durability with temporary SQLite file", () => {
-  const persistence1 = new SqliteCollaborationPersistence();
-  const runId = "run_disk_restart";
-
-  const plans: ParticipantAssignmentPlan[] = [
-    {
-      roleId: "reviewer",
-      participantId: "part_rev",
-      sequenceIndex: 0,
-      adapterId: "acp:claude",
-      role: { id: "reviewer", name: "Reviewer", description: "", systemInstructions: "" },
-      config: { adapterType: "acp" },
-    },
-  ];
-
-  persistence1.createInitialRun(
-    {
-      id: runId,
-      sessionId: "ses_p4_durability",
-      objective: "Verify disk durability",
-      status: "running",
-      round: 0,
-      budget: defaultBudget,
-      policy: defaultPolicy,
-      participantIds: ["part_rev"],
-      participantsById: {
-        part_rev: {
-          id: "part_rev",
-          roleId: "reviewer",
-          adapterId: "acp:claude",
-          status: "idle",
-          turnsExecuted: 0,
-          consecutiveFailures: 0,
-          createdAt: "2026-09-17T00:00:00Z",
-        },
-      },
-      turnHistory: [],
-      createdAt: "2026-09-17T00:00:00Z",
-    },
-    plans,
+  closeDatabase();
+  const diskDbPath = path.join(
+    os.tmpdir(),
+    `test-p4-durability-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
   );
+  const db = initDatabase(diskDbPath);
+  db.exec(`
+    INSERT INTO sessions (id, provider, model, status, created_at, updated_at)
+    VALUES ('ses_p4_durability', 'chatgpt-web', 'gpt-4', 'active', '2026-09-17T00:00:00Z', '2026-09-17T00:00:00Z');
+  `);
 
-  const decisionContent = "APPROVED: All acceptance tests passed.";
-  const decisionHash = computeCollaborationMessageHash({
-    runId,
-    turnId: "cturn_rev_0",
-    participantId: "part_rev",
-    roleId: "reviewer",
-    decisionType: "done",
-    content: decisionContent,
-  });
+  try {
+    const persistence1 = new SqliteCollaborationPersistence();
+    const runId = "run_disk_restart";
 
-  persistence1.recordTurnTransaction({
-    turn: {
-      id: "cturn_rev_0",
-      runId,
-      round: 0,
-      turnIndex: 0,
-      participantId: "part_rev",
-      roleId: "reviewer",
-      status: "completed",
-      inputSummary: "Review turn",
-      decision: { type: "done", summary: decisionContent },
-      startedAt: "2026-09-17T00:00:00Z",
-      completedAt: "2026-09-17T00:00:05Z",
-      durationMs: 5000,
-    },
-    message: {
-      id: "cmsg_rev_0",
+    const plans: ParticipantAssignmentPlan[] = [
+      {
+        roleId: "reviewer",
+        participantId: "part_rev",
+        sequenceIndex: 0,
+        adapterId: "acp:claude",
+        role: { id: "reviewer", name: "Reviewer", description: "", systemInstructions: "" },
+        config: { adapterType: "acp" },
+      },
+    ];
+
+    persistence1.createInitialRun(
+      {
+        id: runId,
+        sessionId: "ses_p4_durability",
+        objective: "Verify disk durability",
+        status: "running",
+        round: 0,
+        budget: defaultBudget,
+        policy: defaultPolicy,
+        participantIds: ["part_rev"],
+        participantsById: {
+          part_rev: {
+            id: "part_rev",
+            roleId: "reviewer",
+            adapterId: "acp:claude",
+            status: "idle",
+            turnsExecuted: 0,
+            consecutiveFailures: 0,
+            createdAt: "2026-09-17T00:00:00Z",
+          },
+        },
+        turnHistory: [],
+        createdAt: "2026-09-17T00:00:00Z",
+      },
+      plans,
+    );
+
+    const decisionContent = "APPROVED: All acceptance tests passed.";
+    const decisionHash = computeCollaborationMessageHash({
       runId,
       turnId: "cturn_rev_0",
-      sequenceIndex: 0,
-      senderParticipantId: "part_rev",
-      senderRoleId: "reviewer",
+      participantId: "part_rev",
+      roleId: "reviewer",
       decisionType: "done",
       content: decisionContent,
-      contentHash: decisionHash,
-      createdAt: "2026-09-17T00:00:05Z",
-    },
-    participant: {
-      id: "part_rev",
-      roleId: "reviewer",
-      adapterId: "acp:claude",
-      status: "idle",
-      turnsExecuted: 1,
-      consecutiveFailures: 0,
-      createdAt: "2026-09-17T00:00:00Z",
-      lastActiveAt: "2026-09-17T00:00:05Z",
-    },
-    runUpdates: {
-      id: runId,
-      status: "completed",
-      finalSummary: decisionContent,
-      completedAt: "2026-09-17T00:00:05Z",
-    },
-  });
+    });
 
-  // Now simulate daemon stop / crash: close database
-  closeDatabase();
+    persistence1.recordTurnTransaction({
+      turn: {
+        id: "cturn_rev_0",
+        runId,
+        round: 0,
+        turnIndex: 0,
+        participantId: "part_rev",
+        roleId: "reviewer",
+        status: "completed",
+        inputSummary: "Review turn",
+        decision: { type: "done", summary: decisionContent },
+        startedAt: "2026-09-17T00:00:00Z",
+        completedAt: "2026-09-17T00:00:05Z",
+        durationMs: 5000,
+      },
+      message: {
+        id: "cmsg_rev_0",
+        runId,
+        turnId: "cturn_rev_0",
+        sequenceIndex: 0,
+        senderParticipantId: "part_rev",
+        senderRoleId: "reviewer",
+        decisionType: "done",
+        content: decisionContent,
+        contentHash: decisionHash,
+        createdAt: "2026-09-17T00:00:05Z",
+      },
+      participant: {
+        id: "part_rev",
+        roleId: "reviewer",
+        adapterId: "acp:claude",
+        status: "idle",
+        turnsExecuted: 1,
+        consecutiveFailures: 0,
+        createdAt: "2026-09-17T00:00:00Z",
+        lastActiveAt: "2026-09-17T00:00:05Z",
+      },
+      runUpdates: {
+        id: runId,
+        status: "completed",
+        finalSummary: decisionContent,
+        completedAt: "2026-09-17T00:00:05Z",
+      },
+    });
 
-  // Re-open database from disk path
-  initDatabase(tempDbPath);
-  const persistence2 = new SqliteCollaborationPersistence();
+    // Now simulate daemon stop / crash: close database
+    closeDatabase();
 
-  const restoredRun = persistence2.getRun(runId);
-  expect(restoredRun).not.toBeNull();
-  expect(restoredRun!.id).toBe(runId);
-  expect(restoredRun!.status).toBe("completed");
-  expect(restoredRun!.finalSummary).toBe(decisionContent);
-  expect(restoredRun!.completedAt).toBe("2026-09-17T00:00:05Z");
-  expect(restoredRun!.turnHistory).toEqual(["cturn_rev_0"]);
-  expect(restoredRun!.participantIds).toEqual(["part_rev"]);
-  expect(restoredRun!.participantsById.part_rev!.turnsExecuted).toBe(1);
+    // Re-open database from disk path
+    initDatabase(diskDbPath);
+    const persistence2 = new SqliteCollaborationPersistence();
 
-  const restoredTranscript = persistence2.getTranscript(runId);
-  expect(restoredTranscript.length).toBe(1);
-  expect(restoredTranscript[0]!.content).toBe(decisionContent);
-  expect(restoredTranscript[0]!.decisionType).toBe("done");
-  expect(restoredTranscript[0]!.senderRoleId).toBe("reviewer");
+    const restoredRun = persistence2.getRun(runId);
+    expect(restoredRun).not.toBeNull();
+    expect(restoredRun!.id).toBe(runId);
+    expect(restoredRun!.status).toBe("completed");
+    expect(restoredRun!.finalSummary).toBe(decisionContent);
+    expect(restoredRun!.completedAt).toBe("2026-09-17T00:00:05Z");
+    expect(restoredRun!.turnHistory).toEqual(["cturn_rev_0"]);
+    expect(restoredRun!.participantIds).toEqual(["part_rev"]);
+    expect(restoredRun!.participantsById.part_rev!.turnsExecuted).toBe(1);
+
+    const restoredTranscript = persistence2.getTranscript(runId);
+    expect(restoredTranscript.length).toBe(1);
+    expect(restoredTranscript[0]!.content).toBe(decisionContent);
+    expect(restoredTranscript[0]!.decisionType).toBe("done");
+    expect(restoredTranscript[0]!.senderRoleId).toBe("reviewer");
+  } finally {
+    closeDatabase();
+    for (const p of [diskDbPath, diskDbPath + "-wal", diskDbPath + "-shm"]) {
+      try {
+        if (fs.existsSync(p)) fs.unlinkSync(p);
+      } catch {
+        // Lingering file locks on Windows temporary test files are safely ignored
+      }
+    }
+  }
 });
