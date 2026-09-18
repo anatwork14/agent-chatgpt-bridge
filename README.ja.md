@@ -246,13 +246,12 @@ CI は macOS、Linux、Windows でサポートされる verification/package/smo
 ```text
 P1 core + codex-router provider plane        DONE + LIVE SIGN-OFF
 P2 provider health / explicit routing       DONE + CI VALIDATED
-P3 native ACP external-agent adapter        IMPLEMENTED + CI GREEN
-P3 real Cursor/Gemini/Claude interoperability LIVE SIGN-OFF PENDING
-P4 role-based collaboration                 NOT STARTED
-P5 bounded multi-participant DAG            NOT STARTED
+P3 native ACP external-agent adapter        DONE + LIVE SIGN-OFF
+P4 role-based collaboration                 DONE + LIVE SIGN-OFF
+P5 bounded multi-participant DAG            IN PROGRESS
 ```
 
-証拠および順序については [`IMPLEMENTATION_PROGRESS.md`](IMPLEMENTATION_PROGRESS.md) を参照してください。
+証拠と実装順序については [`IMPLEMENTATION_PROGRESS.md`](IMPLEMENTATION_PROGRESS.md) を、現在の P5 契約については [`docs/P5_BOUNDED_COLLABORATION_DAG.md`](docs/P5_BOUNDED_COLLABORATION_DAG.md) を参照してください。
 
 ## アーキテクチャおよび実装のリファレンス
 
