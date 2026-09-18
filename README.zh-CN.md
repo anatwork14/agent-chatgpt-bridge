@@ -246,13 +246,12 @@ CI 在 macOS、Linux 和 Windows 上执行受支持的 verification/package/smok
 ```text
 P1 core + codex-router provider plane        DONE + LIVE SIGN-OFF
 P2 provider health / explicit routing       DONE + CI VALIDATED
-P3 native ACP external-agent adapter        IMPLEMENTED + CI GREEN
-P3 real Cursor/Gemini/Claude interoperability LIVE SIGN-OFF PENDING
-P4 role-based collaboration                 NOT STARTED
-P5 bounded multi-participant DAG            NOT STARTED
+P3 native ACP external-agent adapter        DONE + LIVE SIGN-OFF
+P4 role-based collaboration                 DONE + LIVE SIGN-OFF
+P5 bounded multi-participant DAG            IN PROGRESS
 ```
 
-证据与时序参见 [`IMPLEMENTATION_PROGRESS.md`](IMPLEMENTATION_PROGRESS.md)。
+证据与实施顺序参见 [`IMPLEMENTATION_PROGRESS.md`](IMPLEMENTATION_PROGRESS.md)，当前 P5 契约参见 [`docs/P5_BOUNDED_COLLABORATION_DAG.md`](docs/P5_BOUNDED_COLLABORATION_DAG.md)。
 
 ## 架构与实现参考
 
