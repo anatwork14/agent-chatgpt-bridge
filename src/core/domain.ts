@@ -174,6 +174,7 @@ export interface PriorCollaborationTurn {
 
 export interface CollaborationDagTurnContext {
   readonly nodeId: string;
+  readonly instruction: string;
   readonly dependencyNodeIds: readonly string[];
   readonly predecessorMessageIds: readonly string[];
   readonly attempt: number;
