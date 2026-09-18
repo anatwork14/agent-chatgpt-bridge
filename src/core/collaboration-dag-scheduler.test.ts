@@ -269,3 +269,52 @@ it("skip_dependents preserves declaration-order determinism for skipped descenda
   expect(result.skippedNodeIds).toEqual(["first", "second", "join"]);
   expect(result.dispatchOrder).toEqual(["root"]);
 });
+
+
+it("resume scheduler preserves completed nodes and executes only the remaining ready set", async () => {
+  const p = plan({
+    version: 1,
+    nodes: [
+      { id: "root", participantId: "p_arch", instruction: "root", dependsOn: [] },
+      { id: "a", participantId: "p_a", instruction: "a", dependsOn: ["root"] },
+      { id: "b", participantId: "p_b", instruction: "b", dependsOn: ["root"] },
+      { id: "join", participantId: "p_join", instruction: "join", dependsOn: ["a", "b"] },
+    ],
+  });
+
+  const executed: string[] = [];
+  const result = await runBoundedCollaborationDag(p, {
+    maxParallelTurns: 2,
+    initialStatusesByNode: {
+      root: "completed",
+      a: "completed",
+      b: "ready",
+      join: "pending",
+    },
+    async executeNode(node) {
+      executed.push(node.id);
+      return node.id;
+    },
+  });
+
+  expect(executed).toEqual(["b", "join"]);
+  expect(result.dispatchOrder).toEqual(["b", "join"]);
+  expect(result.completionOrder).toEqual(["b", "join"]);
+});
+
+it("resume scheduler rejects unreconciled running state", async () => {
+  const p = plan({
+    version: 1,
+    nodes: [{ id: "root", participantId: "p_arch", instruction: "root", dependsOn: [] }],
+  });
+
+  await expect(
+    runBoundedCollaborationDag(p, {
+      maxParallelTurns: 1,
+      initialStatusesByNode: { root: "running" },
+      async executeNode(node) {
+        return node.id;
+      },
+    }),
+  ).rejects.toMatchObject({ code: "collaboration_dag_recovery_required" });
+});
