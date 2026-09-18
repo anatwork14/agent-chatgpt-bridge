@@ -243,7 +243,7 @@ The integration commit reuses the exact P3 tree as its content and records both 
 [x] P3 live Claude ACP interoperability
 [x] P3 live sign-off
 [x] P4 role-based collaboration
-[ ] P5 bounded multi-participant DAG
+[x] P5 bounded multi-participant DAG
 ```
 
 
@@ -301,7 +301,7 @@ Current slices:
 [x] P5.5 cancellation + failure propagation
 [x] P5.6 recovery / idempotent resume
 [x] P5.7 audit / observability
-[ ] P5.8 real Claude + Antigravity fan-out/fan-in live smoke
+[x] P5.8 real Claude + Antigravity fan-out/fan-in live smoke
 ```
 
 
@@ -327,4 +327,35 @@ A dedicated real-client P5.8 verifier is available as:
 bun run smoke:p5:live
 ```
 
-P5.8 remains open until the real Claude + Antigravity fan-out/fan-in and simultaneous cancellation smoke is executed successfully and its sanitized evidence is recorded.
+P5.8 real-client sign-off is complete.
+
+Release evidence:
+
+```text
+implementation/live-smoke head: a25ae80d3fcf898e0071544d05adcf0a1009d0c4
+live command: bun run smoke:p5:live
+platform: Darwin arm64 (macOS)
+status: PASS
+runStatus: completed
+participantCount: 4
+nodeCount: 4
+maxParallelTurns: 2
+branchOverlapProved: true
+observedMaxConcurrency: 2
+deterministicFanInOrder: true
+reviewerReceivedCriticNonce: true
+reviewerReceivedImplementerNonce: true
+reviewerTerminalDone: true
+cancellationRunStatus: cancelled
+simultaneousCancellationTargets: 2
+cancelledNodeCount: 2
+auditLeakCheck: true
+workspaceMutation: false
+temporaryResourcesRemoved: true
+schemaVersion: 3
+CI run on same implementation head: 35404281425 PASS
+```
+
+**P5 DETERMINISTIC SIGN-OFF: YES**
+
+**P5 LIVE SIGN-OFF: YES**
