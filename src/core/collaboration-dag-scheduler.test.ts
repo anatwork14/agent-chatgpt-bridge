@@ -208,3 +208,64 @@ it("reports external abort as collaboration_dag_cancelled and aborts active node
   }
   expect(abortedCount).toBe(2);
 });
+
+
+it("skip_dependents skips the full transitive dependent chain and continues independent work", async () => {
+  const p = plan({
+    version: 1,
+    nodes: [
+      { id: "root_a", participantId: "p_arch", instruction: "a", dependsOn: [] },
+      { id: "child_a", participantId: "p_a", instruction: "child", dependsOn: ["root_a"] },
+      { id: "join_a", participantId: "p_join", instruction: "join", dependsOn: ["child_a"] },
+      { id: "root_b", participantId: "p_b", instruction: "b", dependsOn: [] },
+    ],
+  });
+
+  const executed: string[] = [];
+  const transitions: Array<{ nodeId: string; to: string }> = [];
+  const result = await runBoundedCollaborationDag(p, {
+    maxParallelTurns: 2,
+    failurePolicy: "skip_dependents",
+    onTransition: transition => transitions.push({ nodeId: transition.nodeId, to: transition.to }),
+    async executeNode(node) {
+      executed.push(node.id);
+      if (node.id === "root_a") {
+        throw new Error("branch failed");
+      }
+      await new Promise(resolve => setTimeout(resolve, 2));
+      return node.id;
+    },
+  });
+
+  expect(result.failedNodeIds).toEqual(["root_a"]);
+  expect(result.skippedNodeIds).toEqual(["child_a", "join_a"]);
+  expect(executed).toContain("root_b");
+  expect(executed).not.toContain("child_a");
+  expect(executed).not.toContain("join_a");
+  expect(transitions).toContainEqual({ nodeId: "child_a", to: "skipped" });
+  expect(transitions).toContainEqual({ nodeId: "join_a", to: "skipped" });
+});
+
+it("skip_dependents preserves declaration-order determinism for skipped descendants", async () => {
+  const p = plan({
+    version: 1,
+    nodes: [
+      { id: "root", participantId: "p_arch", instruction: "root", dependsOn: [] },
+      { id: "first", participantId: "p_a", instruction: "first", dependsOn: ["root"] },
+      { id: "second", participantId: "p_b", instruction: "second", dependsOn: ["root"] },
+      { id: "join", participantId: "p_join", instruction: "join", dependsOn: ["first", "second"] },
+    ],
+  });
+
+  const result = await runBoundedCollaborationDag(p, {
+    maxParallelTurns: 2,
+    failurePolicy: "skip_dependents",
+    async executeNode(node) {
+      if (node.id === "root") throw new Error("root failed");
+      return node.id;
+    },
+  });
+
+  expect(result.skippedNodeIds).toEqual(["first", "second", "join"]);
+  expect(result.dispatchOrder).toEqual(["root"]);
+});
