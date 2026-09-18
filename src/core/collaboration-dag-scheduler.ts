@@ -12,6 +12,7 @@ export type CollaborationDagSchedulerNodeStatus =
   | "running"
   | "completed"
   | "failed"
+  | "skipped"
   | "cancelled";
 
 export interface CollaborationDagSchedulerTransition {
