@@ -54,7 +54,31 @@ export class SqliteCollaborationDagPersistence implements CollaborationDagPersis
   }
 
   markNodeReady(runId: string, nodeId: string): void {
+    const existing = this.dagStore.getNode(runId, nodeId);
+    if (!existing) {
+      throw new BridgeError("not_found", `DAG node '${nodeId}' not found in run '${runId}'`, false);
+    }
+    if (existing.status === "ready") return;
     this.dagStore.updateNode(runId, nodeId, { status: "ready" });
+  }
+
+  markNodeTerminal(params: {
+    readonly runId: string;
+    readonly nodeId: string;
+    readonly status: "failed" | "skipped" | "cancelled";
+    readonly completedAt: string;
+    readonly error?: CollaborationDagNodeRecord["error"];
+  }): void {
+    const existing = this.dagStore.getNode(params.runId, params.nodeId);
+    if (!existing) {
+      throw new BridgeError("not_found", `DAG node '${params.nodeId}' not found in run '${params.runId}'`, false);
+    }
+    if (existing.status === params.status) return;
+    this.dagStore.updateNode(params.runId, params.nodeId, {
+      status: params.status,
+      completedAt: params.completedAt,
+      error: params.error,
+    });
   }
 
   markNodeRunningTransaction(params: {
@@ -145,6 +169,10 @@ export class SqliteCollaborationDagPersistence implements CollaborationDagPersis
         this.runStore.update(params.turn.runId, params.runUpdates);
       }
     })();
+  }
+
+  finalizeRun(runId: string, updates: RoleBasedRunPatch): void {
+    this.runStore.update(runId, updates);
   }
 
   getRun(runId: string): RoleBasedCollaborationRun | null {
