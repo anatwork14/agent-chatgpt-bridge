@@ -27,11 +27,17 @@ import type {
   RoleBasedCollaborationRun,
   RoleBasedCollaborationRunStatus,
 } from "./collaboration-domain";
-import { isRoleBasedRunTerminalStatus, normalizeCancellationReason } from "./collaboration-domain";
+import {
+  isRoleBasedRunTerminalStatus,
+  normalizeCancellationReason,
+  requireValidStartedAt,
+} from "./collaboration-domain";
 import type {
   ActiveCollaborationDagRunControl,
   CollaborationDagExecutionOptions,
   CollaborationDagExecutionResult,
+  CollaborationDagRecoveryReport,
+  CollaborationDagResumeOptions,
   ParticipantRuntime,
   PreparedRoleParticipants,
 } from "./collaboration-runtime";
@@ -48,6 +54,8 @@ import {
   generateRunId,
 } from "./ids";
 import { BridgeError } from "./errors";
+import { deriveCollaborationDagPersistedState } from "./collaboration-dag-recovery";
+import type { PersistedParticipant } from "./collaboration-persistence";
 
 function retryableError(error: unknown): boolean {
   if (error instanceof BridgeError) return error.retryable;
@@ -71,6 +79,7 @@ function errorMessage(error: unknown): string {
 export class CollaborationDagController {
   private readonly activeRuns = new Map<string, ActiveCollaborationDagRunControl>();
   private readonly settlements = new Map<string, Promise<CollaborationDagExecutionResult>>();
+  private readonly resumingRuns = new Set<string>();
 
   constructor(
     private readonly persistence: CollaborationDagPersistence,
