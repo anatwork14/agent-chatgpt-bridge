@@ -1,6 +1,6 @@
 # P5 Live Collaboration DAG Sign-Off
 
-**Status:** PENDING REAL LIVE EXECUTION  
+**Status:** PASS — REAL LIVE SIGN-OFF COMPLETE  
 **Command:** `bun run smoke:p5:live`  
 **Harness:** `scripts/smoke-p5-collaboration-live.ts`
 
@@ -49,54 +49,75 @@ The verifier uses an isolated temporary workspace/database and removes both afte
 
 The sanitized JSON result must report `status: "PASS"` and establish all of the following:
 
-- [ ] four real participants are created with distinct adapter runtime instances;
-- [ ] architect completes before both branch nodes become eligible;
-- [ ] critic (Claude) and implementer (Antigravity) actually overlap in wall-clock execution;
-- [ ] observed maximum concurrency is exactly 2 and never exceeds `maxParallelTurns = 2`;
-- [ ] both branches receive the architect canonical output;
-- [ ] reviewer fan-in provenance is exactly `[critique, implementation]`;
-- [ ] canonical transcript order is deterministic regardless of branch completion order;
-- [ ] reviewer receives both dynamically generated branch nonces and returns `P5_LIVE_OK`;
-- [ ] SQLite v3 stores all node states, canonical messages, and input provenance;
-- [ ] audit IDs are monotonic and payloads contain no objective/prompt/output/nonce/workspace/credential data;
-- [ ] no direct agent-to-agent transport exists; all handoffs are canonical persisted RunController inputs;
-- [ ] second run observes two nodes simultaneously `running` before cancellation;
-- [ ] exact DAG cancellation settles both active nodes as `cancelled`;
-- [ ] cancellation does not call `SessionManager.cancel()`;
-- [ ] no workspace mutation occurs;
-- [ ] temporary resources are removed and adapters are closed.
+- [x] four real participants are created with distinct adapter runtime instances;
+- [x] architect completes before both branch nodes become eligible;
+- [x] critic (Claude) and implementer (Antigravity) actually overlap in wall-clock execution;
+- [x] observed maximum concurrency is exactly 2 and never exceeds `maxParallelTurns = 2`;
+- [x] both branches receive the architect canonical output;
+- [x] reviewer fan-in provenance is exactly `[critique, implementation]`;
+- [x] canonical transcript order is deterministic regardless of branch completion order;
+- [x] reviewer receives both dynamically generated branch nonces and returns `P5_LIVE_OK`;
+- [x] SQLite v3 stores all node states, canonical messages, and input provenance;
+- [x] audit IDs are monotonic and payloads contain no objective/prompt/output/nonce/workspace/credential data;
+- [x] no direct agent-to-agent transport exists; all handoffs are canonical persisted RunController inputs;
+- [x] second run observes two nodes simultaneously `running` before cancellation;
+- [x] exact DAG cancellation settles both active nodes as `cancelled`;
+- [x] cancellation does not call `SessionManager.cancel()`;
+- [x] no workspace mutation occurs;
+- [x] temporary resources are removed and adapters are closed.
 
 ## Sign-off record
 
-Populate only after a real successful run:
+Exact-head real-client sign-off:
 
 ```text
-date:
-platform:
-branch:
-head SHA:
+date: 2026-09-18 23:14:50 UTC
+platform: Darwin arm64 (macOS)
+branch: feat/p5-bounded-collaboration-dag
+head SHA: a25ae80d3fcf898e0071544d05adcf0a1009d0c4
+working tree clean: YES
 command: bun run smoke:p5:live
 
-status:
-runStatus:
-participantCount:
-nodeCount:
-transcriptMessageCount:
-maxParallelTurns:
-branchOverlapProved:
-observedMaxConcurrency:
-deterministicFanInOrder:
-reviewerReceivedCriticNonce:
-reviewerReceivedImplementerNonce:
-reviewerTerminalDone:
-cancellationRunStatus:
-simultaneousCancellationTargets:
-cancelledNodeCount:
-auditLeakCheck:
-workspaceMutation:
-temporaryResourcesRemoved:
+status: PASS
+runStatus: completed
+participantCount: 4
+nodeCount: 4
+transcriptMessageCount: 4
+maxParallelTurns: 2
+branchOverlapProved: true
+observedMaxConcurrency: 2
+deterministicFanInOrder: true
+reviewerReceivedCriticNonce: true
+reviewerReceivedImplementerNonce: true
+reviewerTerminalDone: true
+cancellationRunStatus: cancelled
+simultaneousCancellationTargets: 2
+cancelledNodeCount: 2
+auditLeakCheck: true
+workspaceMutation: false
+temporaryResourcesRemoved: true
+schemaVersion: 3
+
+credentials exposed: NO
+workspace modified: NO
+temporary resources remaining: NO
+PR merged during smoke: NO
+PR marked ready during smoke: NO
 ```
+
+Deterministic CI on the same implementation head:
+
+```text
+CI run: 35404281425
+conclusion: PASS
+branch divergence at gate: 0 behind / 72 ahead
+GitHub mergeability: MERGEABLE
+reviews: 0
+review threads: 0
+```
+
+The release-record commits after this sign-off are documentation/status-only; the implementation and live-smoke harness exercised above remain those from `a25ae80d3fcf898e0071544d05adcf0a1009d0c4`.
 
 ## Release rule
 
-Do not mark P5.8 complete and do not merge PR #10 until this document contains a real PASS record from the current release candidate head.
+P5.8 is complete. Merge remains gated on final CI for the documentation/status-only release-record head and the exact-head merge guard.
