@@ -42,6 +42,7 @@ interface SanitizedP5LiveReport {
   readonly cancelledNodeCount: number;
   readonly auditLeakCheck: boolean;
   readonly workspaceMutation: boolean;
+  readonly temporaryResourcesRemoved: boolean;
   readonly schemaVersion: number;
 }
 
@@ -163,6 +164,7 @@ async function main(): Promise<void> {
 
   let mainPrepared: ReturnType<typeof prepareParticipants> | undefined;
   let cancellationPrepared: ReturnType<typeof prepareParticipants> | undefined;
+  let report: Omit<SanitizedP5LiveReport, "temporaryResourcesRemoved"> | undefined;
 
   try {
     const claudeProfile = resolveAcpProfile("claude");
@@ -476,7 +478,7 @@ async function main(): Promise<void> {
     const unexpectedFiles = filesAfter.filter(file => !filesBefore.includes(file));
     assert.deepEqual(unexpectedFiles, [], "P5 live smoke workspace was mutated");
 
-    const report: SanitizedP5LiveReport = {
+    report = {
       status: "PASS",
       runStatus: result.run.status,
       participantCount: mainPrepared.plans.length,
@@ -497,7 +499,6 @@ async function main(): Promise<void> {
       schemaVersion: 3,
     };
 
-    console.log(JSON.stringify(report, null, 2));
   } finally {
     for (const prepared of [mainPrepared, cancellationPrepared]) {
       if (!prepared) continue;
@@ -514,6 +515,13 @@ async function main(): Promise<void> {
     false,
     "Temporary P5 live-smoke directory survived cleanup",
   );
+  assert.ok(report, "P5 live-smoke report was not produced");
+
+  const finalReport: SanitizedP5LiveReport = {
+    ...report,
+    temporaryResourcesRemoved: true,
+  };
+  console.log(JSON.stringify(finalReport, null, 2));
 }
 
 main().catch(error => {
