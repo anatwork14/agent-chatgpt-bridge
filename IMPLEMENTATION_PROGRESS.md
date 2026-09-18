@@ -293,13 +293,38 @@ P5 keeps graph topology static, bounded, and validated before execution. It adds
 Current slices:
 
 ```text
-[ ] P5.0 DAG domain model + invariants
-[ ] P5.1 graph validation + deterministic planning
-[ ] P5.2 bounded ready-set scheduler / fan-out
-[ ] P5.3 fan-in provenance + canonical node outputs
-[ ] P5.4 SQLite persistence / migration
-[ ] P5.5 cancellation + failure propagation
-[ ] P5.6 recovery / idempotent resume
-[ ] P5.7 audit / observability
+[x] P5.0 DAG domain model + invariants
+[x] P5.1 graph validation + deterministic planning
+[x] P5.2 bounded ready-set scheduler / fan-out
+[x] P5.3 fan-in provenance + canonical node outputs
+[x] P5.4 SQLite persistence / migration
+[x] P5.5 cancellation + failure propagation
+[x] P5.6 recovery / idempotent resume
+[x] P5.7 audit / observability
 [ ] P5.8 real Claude + Antigravity fan-out/fan-in live smoke
 ```
+
+
+### P5 deterministic implementation status
+
+P5.0 through P5.7 are implemented. Current deterministic evidence includes:
+
+- static DAG domain model, hard limits, and pure validation;
+- deterministic Kahn planning and malformed-graph rejection;
+- bounded fan-out with global parallelism and participant-local serialization;
+- deterministic fan-in provenance and canonical transcript hashing;
+- SQLite schema v3 plus atomic node completion and disk durability tests;
+- fail-fast and skip-dependent failure semantics;
+- exact DAG cancellation without coupling to `SessionManager.cancel()`;
+- restart recovery and explicit replay acknowledgement for interrupted nodes;
+- completed-node no-replay and persisted-state corruption checks;
+- recovery/resume audit events with data minimization;
+- provider-independent trusted DAG node instructions now reaching both ACP prompts and subprocess JSONL payloads.
+
+A dedicated real-client P5.8 verifier is available as:
+
+```bash
+bun run smoke:p5:live
+```
+
+P5.8 remains open until the real Claude + Antigravity fan-out/fan-in and simultaneous cancellation smoke is executed successfully and its sanitized evidence is recorded.
