@@ -80,7 +80,10 @@ test("Subprocess JSONL handles additive collaboration payload", async () => {
         console.log(JSON.stringify({
           version: 1,
           type: "message",
-          content: "Role: " + parsed.collaboration.role_id + "; PriorTurns: " + parsed.collaboration.prior_turns.length
+          content: "Role: " + parsed.collaboration.role_id
+            + "; PriorTurns: " + parsed.collaboration.prior_turns.length
+            + "; DagNode: " + (parsed.collaboration.dag?.node_id ?? "none")
+            + "; DagInstruction: " + (parsed.collaboration.dag?.instruction ?? "none")
         }));
       } else {
         console.log(JSON.stringify({ version: 1, type: "message", content: "legacy" }));
@@ -112,5 +115,29 @@ test("Subprocess JSONL handles additive collaboration payload", async () => {
     },
   };
   const roleResult = await adapter.next(roleInput, {});
-  expect(roleResult).toEqual({ type: "message", content: "Role: verifier; PriorTurns: 1", attachments: undefined });
+  expect(roleResult).toEqual({
+    type: "message",
+    content: "Role: verifier; PriorTurns: 1; DagNode: none; DagInstruction: none",
+    attachments: undefined,
+  });
+
+  // P5 DAG call carries the additive static-node execution context.
+  const dagResult = await adapter.next({
+    ...roleInput,
+    collaboration: {
+      ...roleInput.collaboration,
+      dag: {
+        nodeId: "verification",
+        instruction: "Verify only the declared DAG predecessor evidence.",
+        dependencyNodeIds: ["implementation"],
+        predecessorMessageIds: ["msg_impl_1"],
+        attempt: 2,
+      },
+    },
+  }, {});
+  expect(dagResult).toEqual({
+    type: "message",
+    content: "Role: verifier; PriorTurns: 1; DagNode: verification; DagInstruction: Verify only the declared DAG predecessor evidence.",
+    attachments: undefined,
+  });
 });

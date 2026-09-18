@@ -4,7 +4,7 @@
 
 Agent Bridge 负责协作语义：持久会话、规范 transcript、取消、有边界的工作流、权限、路由策略、持久化与可审计性。提供商特定的认证仍由对应提供商或本地 Agent 客户端管理。
 
-> **状态（2026-09-17）：** P1 已完成真实环境验收，P2 已实现并通过确定性验证，P3 原生 ACP 适配器已实现且跨平台 CI 均为绿色。P3 仍需在真实环境下完成对 Cursor、Gemini CLI 和 Claude ACP 的互操作性验收，方可宣布发布就绪。
+> **状态（2026-09-19）：** P1–P4 已发布并完成真实环境验收。P5 有界多参与者协作 DAG 也已实现，并完成 Claude + Antigravity 真实客户端验收。发布跟踪见 PR #10 / issue #9。
 
 ## 架构
 
@@ -246,13 +246,12 @@ CI 在 macOS、Linux 和 Windows 上执行受支持的 verification/package/smok
 ```text
 P1 core + codex-router provider plane        DONE + LIVE SIGN-OFF
 P2 provider health / explicit routing       DONE + CI VALIDATED
-P3 native ACP external-agent adapter        IMPLEMENTED + CI GREEN
-P3 real Cursor/Gemini/Claude interoperability LIVE SIGN-OFF PENDING
-P4 role-based collaboration                 NOT STARTED
-P5 bounded multi-participant DAG            NOT STARTED
+P3 native ACP external-agent adapter        DONE + LIVE SIGN-OFF
+P4 role-based collaboration                 DONE + LIVE SIGN-OFF
+P5 bounded multi-participant DAG            IN PROGRESS
 ```
 
-证据与时序参见 [`IMPLEMENTATION_PROGRESS.md`](IMPLEMENTATION_PROGRESS.md)。
+证据与实施顺序参见 [`IMPLEMENTATION_PROGRESS.md`](IMPLEMENTATION_PROGRESS.md)，当前 P5 契约参见 [`docs/P5_BOUNDED_COLLABORATION_DAG.md`](docs/P5_BOUNDED_COLLABORATION_DAG.md)。
 
 ## 架构与实现参考
 

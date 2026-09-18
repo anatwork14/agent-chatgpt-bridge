@@ -187,7 +187,7 @@ Fallback remains disabled by default and is allowed only through explicit ordere
 
 ### P3 — ACP agent adapters
 
-**Status: IMPLEMENTED + CI GREEN; LIVE SIGN-OFF PENDING**
+**Status: DONE + LIVE SIGN-OFF**
 
 Implemented:
 
@@ -216,7 +216,7 @@ The live gate is documented in `docs/ACP_LIVE_SMOKE.md` and verifies initialize/
 
 ### P4 — role-based collaboration
 
-**Status: NOT STARTED**
+**Status: DONE + LIVE SIGN-OFF**
 
 Introduce explicit collaboration roles such as:
 
@@ -251,7 +251,7 @@ Requirements:
 
 ### P5 — bounded multi-participant collaboration DAG
 
-**Status: NOT STARTED**
+**Status: DONE + LIVE SIGN-OFF**
 
 Generalize the current two-party relay into a bounded graph:
 
@@ -315,12 +315,10 @@ wrappers               > large upstream browser refactors
 
 ## Current implementation sequence
 
-1. Finish P3 real-client Cursor/Gemini/Claude interoperability sign-off.
-2. Merge the consolidated `release/p3-hardening` baseline to `main` after CI + live evidence.
-3. Retire/supersede the old stacked PRs only after the consolidated merge.
-4. Design P4 role-policy schema on the merged baseline.
-5. Implement role-aware provider/agent selection with persisted decisions and permission boundaries.
-6. Generalize `RunController` into the P5 bounded collaboration DAG.
-7. Integrate upward with ARC/CompanyOS through explicit APIs/events rather than merging execution-plane responsibilities into Agent Bridge.
+1. Preserve the released P4 role-based collaboration baseline on `main`.
+2. P5 bounded multi-participant collaboration DAG implementation is complete.
+3. P5 real Claude + Antigravity fan-out/fan-in and simultaneous cancellation sign-off is complete.
+4. Merge P5 only after final exact-head CI on the documentation/status-only release-record head.
+5. Integrate upward with ARC/CompanyOS through explicit APIs/events rather than merging execution-plane responsibilities into Agent Bridge.
 
 Do not begin a later milestone by weakening an earlier milestone's correctness, security, cancellation, persistence, or audit guarantees.

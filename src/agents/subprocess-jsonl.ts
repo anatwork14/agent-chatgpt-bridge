@@ -216,6 +216,17 @@ export class SubprocessJsonlAdapter implements ExternalAgentAdapter {
             decision_type: t.decisionType,
             text: t.text,
           })),
+          ...(input.collaboration.dag
+            ? {
+                dag: {
+                  node_id: input.collaboration.dag.nodeId,
+                  instruction: input.collaboration.dag.instruction,
+                  dependency_node_ids: input.collaboration.dag.dependencyNodeIds,
+                  predecessor_message_ids: input.collaboration.dag.predecessorMessageIds,
+                  attempt: input.collaboration.dag.attempt,
+                },
+              }
+            : {}),
         };
       }
 

@@ -55,7 +55,8 @@
     "launcher:typecheck": "bun run --cwd launcher typecheck",
     "launcher:build": "bun run --cwd launcher build",
     "launcher:test": "bun run --cwd launcher test",
-    "verify": "bun run scripts/verify.ts"
+    "verify": "bun run scripts/verify.ts",
+    "smoke:p5:live": "bun run scripts/smoke-p5-collaboration-live.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",

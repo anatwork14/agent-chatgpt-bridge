@@ -4,7 +4,7 @@ AI エージェントがメッセージを手動コピーすることなく、Ch
 
 Agent Bridge は協調セマンティクスを統括します: 永続セッション、標準 transcript、キャンセル、有界ワークフロー、権限、ルーティングポリシー、永続化、および監査可能性。プロバイダー固有の認証はプロバイダーまたはローカルエージェントクライアント側に留まります。
 
-> **ステータス (2026-09-17):** P1 は本番実機検証済み、P2 は実装され決定論的検証を通過、P3 のネイティブ ACP アダプターは実装済みでクロスプラットフォーム CI はすべてグリーンです。スタックをリリース完了とする前に、P3 は Cursor、Gemini CLI、Claude ACP に対する実環境での相互運用性の正式サインオフが引き続き必要です。
+> **ステータス (2026-09-19):** P1–P4 はリリース済み / 実環境サインオフ済みです。P5 の有界マルチ参加者協調 DAG も実装済みで、Claude + Antigravity による実環境サインオフが完了しています。リリース追跡は PR #10 / issue #9 です。
 
 ## アーキテクチャ
 
@@ -246,13 +246,12 @@ CI は macOS、Linux、Windows でサポートされる verification/package/smo
 ```text
 P1 core + codex-router provider plane        DONE + LIVE SIGN-OFF
 P2 provider health / explicit routing       DONE + CI VALIDATED
-P3 native ACP external-agent adapter        IMPLEMENTED + CI GREEN
-P3 real Cursor/Gemini/Claude interoperability LIVE SIGN-OFF PENDING
-P4 role-based collaboration                 NOT STARTED
-P5 bounded multi-participant DAG            NOT STARTED
+P3 native ACP external-agent adapter        DONE + LIVE SIGN-OFF
+P4 role-based collaboration                 DONE + LIVE SIGN-OFF
+P5 bounded multi-participant DAG            IN PROGRESS
 ```
 
-証拠および順序については [`IMPLEMENTATION_PROGRESS.md`](IMPLEMENTATION_PROGRESS.md) を参照してください。
+証拠と実装順序については [`IMPLEMENTATION_PROGRESS.md`](IMPLEMENTATION_PROGRESS.md) を、現在の P5 契約については [`docs/P5_BOUNDED_COLLABORATION_DAG.md`](docs/P5_BOUNDED_COLLABORATION_DAG.md) を参照してください。
 
 ## アーキテクチャおよび実装のリファレンス
 

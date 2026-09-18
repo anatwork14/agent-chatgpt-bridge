@@ -51,7 +51,14 @@ function positiveOption(name: string, value: number | undefined, fallback: numbe
 
 export function textPrompt(input: AgentTurnInput, firstPrompt: boolean): string {
   if (input.collaboration) {
-    const { roleId, roleName, systemInstructions, priorTurns } = input.collaboration;
+    const { roleId, roleName, systemInstructions, priorTurns, dag } = input.collaboration;
+    const dagInstructionSection = dag
+      ? [
+          "TRUSTED DAG NODE INSTRUCTION",
+          dag.instruction,
+          "",
+        ]
+      : [];
     const priorOutputsText =
       priorTurns.length === 0
         ? "No prior turns."
@@ -75,6 +82,7 @@ export function textPrompt(input: AgentTurnInput, firstPrompt: boolean): string 
       "OBJECTIVE",
       input.objective,
       "",
+      ...dagInstructionSection,
       "UNTRUSTED PRIOR COLLABORATION OUTPUTS",
       priorOutputsText,
       "",

@@ -38,6 +38,10 @@ import type {
   RoleBasedExecutionResult,
   RoleBasedExecutionOptions,
   ActiveRoleRunControl,
+  CollaborationDagExecutionOptions,
+  CollaborationDagExecutionResult,
+  CollaborationDagRecoveryReport,
+  CollaborationDagResumeOptions,
 } from "./collaboration-runtime";
 import type {
   RoleBasedRunPersistence,
@@ -57,6 +61,9 @@ import {
   type CollaborationAuditEventType,
   type CollaborationAuditPayloadMap,
 } from "./collaboration-audit";
+import type { CollaborationDagDefinition } from "./collaboration-dag";
+import type { CollaborationDagPersistence } from "./collaboration-dag-persistence";
+import { CollaborationDagController } from "./collaboration-dag-controller";
 
 
 
@@ -106,6 +113,7 @@ export class RunController {
   private readonly resumingRoleRuns = new Set<string>();
   /** Tracks terminal audit emissions to guarantee exactly one terminal event per run. */
   private readonly settledTerminalAudits = new Set<string>();
+  private readonly dagController?: CollaborationDagController;
 
   private emitRoleAudit<T extends CollaborationAuditEventType>(params: {
     eventType: T;
@@ -229,7 +237,12 @@ export class RunController {
     ) => ExternalAgentAdapter,
     private readonly rolePersistence?: RoleBasedRunPersistence,
     private readonly restoreParticipants?: PersistedParticipantRestorer,
-  ) {}
+    dagPersistence?: CollaborationDagPersistence,
+  ) {
+    if (dagPersistence) {
+      this.dagController = new CollaborationDagController(dagPersistence, auditStore);
+    }
+  }
 
 
 
@@ -351,9 +364,12 @@ export class RunController {
   async cancelAllRuns(): Promise<number> {
     const ids = [...this.activeRuns.keys()];
     const results = await Promise.all(ids.map(id => this.cancelRun(id)));
-    const roleCount = await this.cancelAllRoleBasedRuns();
+    const [roleCount, dagCount] = await Promise.all([
+      this.cancelAllRoleBasedRuns(),
+      this.cancelAllDagRuns(),
+    ]);
     await this.waitForIdle();
-    return results.filter(Boolean).length + roleCount;
+    return results.filter(Boolean).length + roleCount + dagCount;
   }
 
   async waitForIdle(): Promise<void> {
@@ -363,6 +379,7 @@ export class RunController {
         ...this.roleRunSettlements.values(),
       ]);
     }
+    await this.dagController?.waitForIdle();
   }
 
   private async nextAgentDecision(
@@ -664,6 +681,117 @@ export class RunController {
    * Atomically persists initial run and participants, registers control,
    * launches execution loop in background, and returns the initial run record.
    */
+  private requireDagController(): CollaborationDagController {
+    if (!this.dagController) {
+      throw new BridgeError(
+        "collaboration_persistence_unavailable",
+        "P5 DAG persistence is not configured for this runtime",
+        false,
+      );
+    }
+    return this.dagController;
+  }
+
+  /**
+   * Starts a bounded static P5 collaboration DAG using already-prepared P4 participants.
+   * Existing P4 sequential execution remains untouched.
+   */
+  async startDagRun(
+    sessionId: string,
+    config: CollaborationConfig,
+    prepared: PreparedRoleParticipants,
+    graph: CollaborationDagDefinition,
+    options?: CollaborationDagExecutionOptions,
+  ): Promise<RoleBasedCollaborationRun> {
+    const session = await this.sessionManager.get(sessionId);
+    if (session.status === "closed" || session.status === "closing") {
+      throw new BridgeError("session_closed", `Session ${session.id} is closed`, false);
+    }
+    return this.requireDagController().start(sessionId, config, prepared, graph, options);
+  }
+
+  async executeDagRun(
+    sessionId: string,
+    config: CollaborationConfig,
+    prepared: PreparedRoleParticipants,
+    graph: CollaborationDagDefinition,
+    options?: CollaborationDagExecutionOptions,
+  ): Promise<CollaborationDagExecutionResult> {
+    const session = await this.sessionManager.get(sessionId);
+    if (session.status === "closed" || session.status === "closing") {
+      throw new BridgeError("session_closed", `Session ${session.id} is closed`, false);
+    }
+    return this.requireDagController().execute(sessionId, config, prepared, graph, options);
+  }
+
+  async waitForDagRun(runId: string): Promise<CollaborationDagExecutionResult> {
+    return this.requireDagController().waitForRun(runId);
+  }
+
+  getDagRun(runId: string): RoleBasedCollaborationRun | null {
+    return this.dagController?.getRun(runId) ?? null;
+  }
+
+  async cancelDagRun(
+    runId: string,
+    reason = "Collaboration DAG run was cancelled",
+  ): Promise<boolean> {
+    return this.requireDagController().cancelRun(runId, reason);
+  }
+
+  async cancelAllDagRuns(): Promise<number> {
+    if (!this.dagController) return 0;
+    return this.dagController.cancelAllRuns();
+  }
+
+
+  recoverDagRuns(options?: {
+    readonly now?: () => number;
+    readonly clock?: () => string;
+  }): CollaborationDagRecoveryReport {
+    if (!this.dagController) {
+      return {
+        examined: 0,
+        pausedAtSafeBoundary: 0,
+        interruptedNodesReconciled: 0,
+        completedAtRecovery: 0,
+        terminalAtRecovery: 0,
+        failedRunIds: [],
+      };
+    }
+    return this.dagController.recoverRunningRuns(options);
+  }
+
+  async resumeDagRun(
+    runId: string,
+    options?: CollaborationDagResumeOptions,
+  ): Promise<RoleBasedCollaborationRun> {
+    const dagController = this.requireDagController();
+
+    // Validate budgets/replay requirements before participant restoration.
+    const persistedParticipants = dagController.prepareResume(runId, options);
+    const run = dagController.getRun(runId);
+    if (!run) {
+      throw new BridgeError("run_not_found", `DAG run '${runId}' not found`, false);
+    }
+
+    const session = await this.sessionManager.get(run.sessionId);
+    if (session.status === "closed" || session.status === "closing") {
+      throw new BridgeError("session_closed", `Session ${session.id} is closed`, false);
+    }
+    if (!this.restoreParticipants) {
+      throw new BridgeError(
+        "collaboration_restore_unavailable",
+        "Persisted participant restoration is not configured for P5 DAG resume",
+        false,
+      );
+    }
+
+    const prepared = this.restoreParticipants(persistedParticipants);
+    return dagController.resume(runId, prepared, options);
+  }
+
+
   async startRoleBasedRun(
     sessionId: string,
     config: CollaborationConfig,
@@ -2476,7 +2604,9 @@ export class RunController {
     const nowFn = options?.now ?? (() => Date.now());
     const clock = options?.clock ?? (() => new Date().toISOString());
 
-    const orphanedRuns = persistence.listRunsByStatuses(["running"]);
+    const orphanedRuns = persistence
+      .listRunsByStatuses(["running"])
+      .filter(run => !this.dagController?.isDagRun(run.id));
     let pausedAtSafeBoundary = 0;
     let syntheticTurnRecorded = 0;
     let budgetExhaustedAtRecovery = 0;
@@ -2843,6 +2973,14 @@ export class RunController {
     options?: RoleBasedResumeOptions,
   ): Promise<RoleBasedCollaborationRun> {
     const persistence = this.requireRolePersistence();
+
+    if (this.dagController?.isDagRun(runId)) {
+      throw new BridgeError(
+        "invalid_state_transition",
+        `Run '${runId}' is a P5 DAG run; use resumeDagRun() instead`,
+        false,
+      );
+    }
 
     // Step 1: Load canonical run and verify paused
     const run = persistence.getRun(runId);

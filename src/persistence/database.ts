@@ -281,4 +281,99 @@ function runMigrations(database: Database): void {
       database.exec("INSERT INTO schema_migrations (version) VALUES (2);");
     })();
   }
+
+  if (currentVersion < 3) {
+    database.transaction(() => {
+      database.exec(`
+        CREATE TABLE collaboration_dag_runs (
+          run_id TEXT PRIMARY KEY,
+          graph_version INTEGER NOT NULL,
+          failure_policy TEXT NOT NULL,
+          graph_json TEXT NOT NULL,
+          max_parallel_turns INTEGER NOT NULL,
+          FOREIGN KEY(run_id) REFERENCES role_based_runs(id) ON DELETE CASCADE
+        );
+      `);
+
+      database.exec(`
+        CREATE TABLE collaboration_dag_nodes (
+          run_id TEXT NOT NULL,
+          id TEXT NOT NULL,
+          participant_id TEXT NOT NULL,
+          role_id TEXT NOT NULL,
+          declaration_index INTEGER NOT NULL,
+          instruction_text TEXT NOT NULL,
+          status TEXT NOT NULL,
+          attempt INTEGER NOT NULL DEFAULT 0,
+          retry_limit INTEGER NOT NULL DEFAULT 0,
+          timeout_ms INTEGER,
+          output_message_id TEXT,
+          error_json TEXT,
+          started_at TEXT,
+          completed_at TEXT,
+          PRIMARY KEY(run_id, id),
+          UNIQUE(run_id, declaration_index),
+          FOREIGN KEY(run_id) REFERENCES role_based_runs(id) ON DELETE CASCADE,
+          FOREIGN KEY(participant_id) REFERENCES collaboration_participants(id),
+          FOREIGN KEY(output_message_id) REFERENCES collaboration_messages(id)
+        );
+      `);
+
+      database.exec(`
+        CREATE INDEX idx_collaboration_dag_nodes_run_status
+        ON collaboration_dag_nodes(run_id, status, declaration_index);
+      `);
+
+      database.exec(`
+        CREATE INDEX idx_collaboration_dag_nodes_participant
+        ON collaboration_dag_nodes(run_id, participant_id, status);
+      `);
+
+      database.exec(`
+        CREATE TABLE collaboration_dag_edges (
+          run_id TEXT NOT NULL,
+          predecessor_node_id TEXT NOT NULL,
+          successor_node_id TEXT NOT NULL,
+          dependency_order INTEGER NOT NULL,
+          PRIMARY KEY(run_id, predecessor_node_id, successor_node_id),
+          UNIQUE(run_id, successor_node_id, dependency_order),
+          FOREIGN KEY(run_id, predecessor_node_id)
+            REFERENCES collaboration_dag_nodes(run_id, id) ON DELETE CASCADE,
+          FOREIGN KEY(run_id, successor_node_id)
+            REFERENCES collaboration_dag_nodes(run_id, id) ON DELETE CASCADE
+        );
+      `);
+
+      database.exec(`
+        CREATE INDEX idx_collaboration_dag_edges_successor
+        ON collaboration_dag_edges(run_id, successor_node_id, dependency_order);
+      `);
+
+      database.exec(`
+        CREATE TABLE collaboration_dag_inputs (
+          run_id TEXT NOT NULL,
+          node_id TEXT NOT NULL,
+          attempt INTEGER NOT NULL,
+          turn_id TEXT NOT NULL,
+          objective_included INTEGER NOT NULL,
+          predecessor_node_ids_json TEXT NOT NULL,
+          predecessor_message_ids_json TEXT NOT NULL,
+          assembled_at TEXT NOT NULL,
+          PRIMARY KEY(run_id, node_id, attempt),
+          UNIQUE(turn_id),
+          FOREIGN KEY(run_id, node_id)
+            REFERENCES collaboration_dag_nodes(run_id, id) ON DELETE CASCADE,
+          FOREIGN KEY(turn_id) REFERENCES collaboration_turns(id) ON DELETE CASCADE
+        );
+      `);
+
+      database.exec(`
+        CREATE INDEX idx_collaboration_dag_inputs_run
+        ON collaboration_dag_inputs(run_id, node_id, attempt);
+      `);
+
+      database.exec("INSERT INTO schema_migrations (version) VALUES (3);");
+    })();
+  }
+
 }

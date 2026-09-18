@@ -25,7 +25,7 @@ afterEach(() => {
   }
 });
 
-test("Database initializes correctly with all tables (legacy and v2)", () => {
+test("Database initializes correctly with legacy, v2, and v3 tables", () => {
   const db = initDatabase(":memory:");
 
   const tablesResult = db.query(`SELECT name FROM sqlite_master WHERE type='table'`).all() as { name: string }[];
@@ -46,15 +46,21 @@ test("Database initializes correctly with all tables (legacy and v2)", () => {
   expect(tables).toContain("collaboration_turns");
   expect(tables).toContain("collaboration_messages");
 
+  // Migration v3 tables
+  expect(tables).toContain("collaboration_dag_runs");
+  expect(tables).toContain("collaboration_dag_nodes");
+  expect(tables).toContain("collaboration_dag_edges");
+  expect(tables).toContain("collaboration_dag_inputs");
+
   // Migration version check
   const maxVersion = db.query("SELECT MAX(version) as v FROM schema_migrations").get() as { v: number };
-  expect(maxVersion.v).toBe(2);
+  expect(maxVersion.v).toBe(3);
 
   const countRow = db.query("SELECT COUNT(*) as c FROM schema_migrations").get() as { c: number };
-  expect(countRow.c).toBe(2);
+  expect(countRow.c).toBe(3);
 });
 
-test("Database migration v2 indexes exist", () => {
+test("Database migration v2 and v3 indexes exist", () => {
   const db = initDatabase(":memory:");
   const indexesResult = db.query(`SELECT name FROM sqlite_master WHERE type='index'`).all() as { name: string }[];
   const indexes = indexesResult.map(i => i.name);
@@ -67,12 +73,16 @@ test("Database migration v2 indexes exist", () => {
   expect(indexes).toContain("idx_collaboration_turns_participant");
   expect(indexes).toContain("idx_collaboration_messages_run");
   expect(indexes).toContain("idx_collaboration_messages_turn");
+  expect(indexes).toContain("idx_collaboration_dag_nodes_run_status");
+  expect(indexes).toContain("idx_collaboration_dag_nodes_participant");
+  expect(indexes).toContain("idx_collaboration_dag_edges_successor");
+  expect(indexes).toContain("idx_collaboration_dag_inputs_run");
 });
 
 test("Database initializes SQLite :memory: without filesystem setup", () => {
   const db = initDatabase(":memory:");
   const maxVersion = db.query("SELECT MAX(version) as v FROM schema_migrations").get() as { v: number };
-  expect(maxVersion.v).toBe(2);
+  expect(maxVersion.v).toBe(3);
 });
 
 test("Database migration re-open is idempotent", () => {
@@ -82,9 +92,9 @@ test("Database migration re-open is idempotent", () => {
 
   const db2 = initDatabase(testDbPath);
   const maxVersion = db2.query("SELECT MAX(version) as v FROM schema_migrations").get() as { v: number };
-  expect(maxVersion.v).toBe(2);
+  expect(maxVersion.v).toBe(3);
   const countRow = db2.query("SELECT COUNT(*) as c FROM schema_migrations").get() as { c: number };
-  expect(countRow.c).toBe(2);
+  expect(countRow.c).toBe(3);
 });
 
 test("Database foreign keys fail closed on invalid references", () => {
@@ -107,7 +117,7 @@ test("Database foreign keys fail closed on invalid references", () => {
   }).toThrow();
 });
 
-test("Database upgrades cleanly from v1 to v2 preserving legacy data", () => {
+test("Database upgrades cleanly from v1 through v3 preserving legacy data", () => {
   // Construct a database directly with v1 schema only
   const rawDb = new Database(upgradeDbPath);
   rawDb.exec("PRAGMA journal_mode = WAL;");
@@ -206,9 +216,9 @@ test("Database upgrades cleanly from v1 to v2 preserving legacy data", () => {
   closeDatabase();
   const upgradedDb = initDatabase(upgradeDbPath);
 
-  // Check version is now 2
+  // Check version is now 3
   const maxVersion = upgradedDb.query("SELECT MAX(version) as v FROM schema_migrations").get() as { v: number };
-  expect(maxVersion.v).toBe(2);
+  expect(maxVersion.v).toBe(3);
 
   // Legacy data intact
   const sessionRow = upgradedDb.query("SELECT * FROM sessions WHERE id = 'ses_v1'").get() as any;
@@ -225,6 +235,10 @@ test("Database upgrades cleanly from v1 to v2 preserving legacy data", () => {
   expect(tables).toContain("collaboration_participants");
   expect(tables).toContain("collaboration_turns");
   expect(tables).toContain("collaboration_messages");
+  expect(tables).toContain("collaboration_dag_runs");
+  expect(tables).toContain("collaboration_dag_nodes");
+  expect(tables).toContain("collaboration_dag_edges");
+  expect(tables).toContain("collaboration_dag_inputs");
 });
 
 test("Database crash-state recovery", () => {

@@ -4,7 +4,7 @@ A local, provider-agnostic collaboration runtime that lets AI agents work with C
 
 Agent Bridge owns the collaboration semantics: persistent sessions, canonical transcripts, cancellation, bounded workflows, permissions, routing policy, persistence, and auditability. Provider-specific authentication remains with the provider or local agent client.
 
-> **Status (2026-09-17):** P1 is live-signed-off, P2 is implemented and deterministically validated, and P3's native ACP adapter is implemented with cross-platform CI green. P3 still requires real interoperability sign-off against Cursor, Gemini CLI, and Claude ACP before the stack is called release-complete.
+> **Status (2026-09-19):** P1–P4 are released/live-signed-off. P5 bounded multi-participant collaboration DAG is implemented and real-client live-signed-off with Claude + Antigravity; release tracking is in PR #10 / issue #9.
 
 ## Architecture
 
@@ -246,13 +246,12 @@ Current milestone state:
 ```text
 P1 core + codex-router provider plane        DONE + LIVE SIGN-OFF
 P2 provider health / explicit routing       DONE + CI VALIDATED
-P3 native ACP external-agent adapter        IMPLEMENTED + CI GREEN
-P3 real Cursor/Gemini/Claude interoperability LIVE SIGN-OFF PENDING
-P4 role-based collaboration                 NOT STARTED
-P5 bounded multi-participant DAG            NOT STARTED
+P3 native ACP external-agent adapter        DONE + LIVE SIGN-OFF
+P4 role-based collaboration                 DONE + LIVE SIGN-OFF
+P5 bounded multi-participant DAG            IN PROGRESS
 ```
 
-See [`IMPLEMENTATION_PROGRESS.md`](IMPLEMENTATION_PROGRESS.md) for evidence and sequencing.
+See [`IMPLEMENTATION_PROGRESS.md`](IMPLEMENTATION_PROGRESS.md) for evidence and sequencing, and [`docs/P5_BOUNDED_COLLABORATION_DAG.md`](docs/P5_BOUNDED_COLLABORATION_DAG.md) for the active P5 contract.
 
 ## Architecture and implementation references
 

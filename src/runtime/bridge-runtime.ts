@@ -12,6 +12,7 @@ import { closeDatabase, initDatabase } from "../persistence/database";
 import { MessageStore } from "../persistence/message-store";
 import { RunStore } from "../persistence/run-store";
 import { SqliteCollaborationPersistence } from "../persistence/sqlite-collaboration-persistence";
+import { SqliteCollaborationDagPersistence } from "../persistence/sqlite-collaboration-dag-persistence";
 import { SessionStore } from "../persistence/session-store";
 import { TurnStore } from "../persistence/turn-store";
 import { SessionManager } from "../core/session-manager";
@@ -58,6 +59,8 @@ export interface BridgeRuntime {
   recoveredInterruptedTurns: number;
   /** Number of P4 role-based runs reconciled from 'running' → 'paused' at startup. */
   recoveredRoleBasedRuns: number;
+  /** Number of P5 DAG runs examined and reconciled at startup. */
+  recoveredDagRuns: number;
   close(): Promise<void>;
 }
 
@@ -207,6 +210,7 @@ export async function createBridgeRuntime(
 
   const runStore = new RunStore();
   const collaborationPersistence = new SqliteCollaborationPersistence();
+  const collaborationDagPersistence = new SqliteCollaborationDagPersistence();
   const runController = new RunController(
     runStore,
     sessionManager,
@@ -265,13 +269,16 @@ export async function createBridgeRuntime(
     },
     collaborationPersistence,
     restorePersistedParticipants,
+    collaborationDagPersistence,
   );
 
   // P4.6: Reconcile any role-based runs that were left in status=running by the previous
   // daemon instance. This MUST run before any new runs can start.
   let recoveryReport;
+  let dagRecoveryReport;
   try {
     recoveryReport = runController.recoverRoleBasedRuns();
+    dagRecoveryReport = runController.recoverDagRuns();
   } catch (recoveryError) {
     await Promise.allSettled([
       sessionManager.shutdown(),
@@ -281,6 +288,7 @@ export async function createBridgeRuntime(
     throw recoveryError;
   }
   const recoveredRoleBasedRuns = recoveryReport.examined;
+  const recoveredDagRuns = dagRecoveryReport.examined;
 
 
   const apiToken = dependencies.apiToken ?? bridgeApiToken(config);
@@ -353,6 +361,7 @@ export async function createBridgeRuntime(
     baseUrl: `http://${host}:${port}/bridge/v1`,
     recoveredInterruptedTurns,
     recoveredRoleBasedRuns,
+    recoveredDagRuns,
     close,
   };
 

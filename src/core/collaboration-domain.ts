@@ -86,8 +86,8 @@ export interface RoleBasedRunBudget {
   readonly maxTurns: number;
   /** Maximum participants allowed to be instantiated in this run */
   readonly maxParticipants: number;
-  /** Strictly 1 for P4 (enforces sequential turns; parallel execution belongs to P5) */
-  readonly maxParallelTurns: 1;
+  /** P4 validators require 1; P5 DAG runs may use a bounded value >1. */
+  readonly maxParallelTurns: number;
   /** Maximum consecutive retries allowed per participant before failure escalation */
   readonly maxRetriesPerParticipant: number;
   /** Hard total wall-clock limit in milliseconds */
