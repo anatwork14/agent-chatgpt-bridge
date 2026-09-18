@@ -62,6 +62,44 @@ export class SqliteCollaborationDagPersistence implements CollaborationDagPersis
     this.dagStore.updateNode(runId, nodeId, { status: "ready" });
   }
 
+  reconcileInterruptedNode(params: {
+    readonly runId: string;
+    readonly nodeId: string;
+    readonly participant: ParticipantRecord;
+    readonly recoveredAt: string;
+  }): void {
+    const existing = this.dagStore.getNode(params.runId, params.nodeId);
+    if (!existing) {
+      throw new BridgeError(
+        "not_found",
+        `DAG node '${params.nodeId}' not found in run '${params.runId}'`,
+        false,
+      );
+    }
+    if (existing.status !== "running") {
+      throw new BridgeError(
+        "invalid_state_transition",
+        `Cannot reconcile DAG node '${params.nodeId}' from status '${existing.status}'`,
+        false,
+      );
+    }
+
+    const db = getDatabase();
+    db.transaction(() => {
+      this.participantStore.update(params.participant.id, params.participant);
+      this.dagStore.updateNode(params.runId, params.nodeId, {
+        status: "ready",
+        startedAt: null,
+        completedAt: null,
+        error: {
+          code: "daemon_restarted",
+          message: "In-flight DAG node was interrupted by daemon restart",
+          retryable: true,
+        },
+      });
+    })();
+  }
+
   markNodeTerminal(params: {
     readonly runId: string;
     readonly nodeId: string;
@@ -173,6 +211,10 @@ export class SqliteCollaborationDagPersistence implements CollaborationDagPersis
 
   finalizeRun(runId: string, updates: RoleBasedRunPatch): void {
     this.runStore.update(runId, updates);
+  }
+
+  listRunsByStatuses(statuses: readonly string[]): RoleBasedCollaborationRun[] {
+    return this.runStore.listByStatuses(statuses);
   }
 
   getRun(runId: string): RoleBasedCollaborationRun | null {
