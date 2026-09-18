@@ -226,6 +226,7 @@ describe("P5 RunController DAG orchestration", () => {
     });
     const reviewer = new MockAdapter("reviewer", input => {
       expect(input.collaboration?.dag?.nodeId).toBe("review");
+      expect(input.collaboration?.dag?.instruction).toBe("Synthesize critique and implementation");
       expect(input.collaboration?.dag?.dependencyNodeIds).toEqual([
         "critique",
         "implementation",
