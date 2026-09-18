@@ -4,7 +4,7 @@ A local, provider-agnostic collaboration runtime that lets AI agents work with C
 
 Agent Bridge owns the collaboration semantics: persistent sessions, canonical transcripts, cancellation, bounded workflows, permissions, routing policy, persistence, and auditability. Provider-specific authentication remains with the provider or local agent client.
 
-> **Status (2026-09-18):** P1–P3 are released, P4 role-based collaboration is merged and live-signed-off, and P5 bounded multi-participant collaboration DAG work is in progress on `feat/p5-bounded-collaboration-dag` (issue #9).
+> **Status (2026-09-19):** P1–P4 are released/live-signed-off. P5 bounded multi-participant collaboration DAG is implemented and real-client live-signed-off with Claude + Antigravity; release tracking is in PR #10 / issue #9.
 
 ## Architecture
 
