@@ -483,4 +483,159 @@ describe("P5 RunController DAG orchestration", () => {
     expect(implementer.nextCalls).toBe(0);
     expect(reviewer.nextCalls).toBe(0);
   });
+
+  it("skip_dependents persists skipped descendants while an independent terminal path completes", async () => {
+    const architect = new MockAdapter("architect", () => {
+      throw new Error("architecture branch failed");
+    });
+    const critic = new MockAdapter("critic", () => ({ type: "message", content: "SHOULD_NOT_RUN" }));
+    const implementer = new MockAdapter("implementer", () => ({ type: "message", content: "INDEPENDENT" }));
+    const reviewer = new MockAdapter("reviewer", async () => {
+      await new Promise(resolve => setTimeout(resolve, 8));
+      return { type: "done", summary: "INDEPENDENT_TERMINAL_OK" };
+    });
+
+    const config = baseConfig();
+    const { prepared, byRole } = prepare(config, {
+      architect,
+      critic,
+      implementer,
+      reviewer,
+    });
+
+    const graph: CollaborationDagDefinition = {
+      version: 1,
+      nodes: [
+        {
+          id: "failing_root",
+          participantId: byRole.architect!,
+          instruction: "fail",
+          dependsOn: [],
+        },
+        {
+          id: "skipped_child",
+          participantId: byRole.critic!,
+          instruction: "must be skipped",
+          dependsOn: ["failing_root"],
+        },
+        {
+          id: "independent_work",
+          participantId: byRole.implementer!,
+          instruction: "independent",
+          dependsOn: [],
+        },
+        {
+          id: "independent_terminal",
+          participantId: byRole.reviewer!,
+          instruction: "finish independently",
+          dependsOn: ["independent_work"],
+          terminal: true,
+        },
+      ],
+    };
+
+    const persistence = new SqliteCollaborationDagPersistence();
+    const { controller: runController, audit } = controller(persistence);
+    const result = await runController.executeDagRun(
+      "ses_p5_controller",
+      config,
+      prepared,
+      graph,
+      {
+        failurePolicy: "skip_dependents",
+        budget: { maxParallelTurns: 2, maxRetriesPerParticipant: 0 },
+      },
+    );
+
+    expect(result.run.status).toBe("completed");
+    expect(result.run.finalSummary).toBe("INDEPENDENT_TERMINAL_OK");
+    expect(result.nodes.find(node => node.id === "failing_root")?.status).toBe("failed");
+    expect(result.nodes.find(node => node.id === "skipped_child")?.status).toBe("skipped");
+    expect(result.nodes.find(node => node.id === "independent_terminal")?.status).toBe("completed");
+    expect(critic.nextCalls).toBe(0);
+    expect(
+      audit.events.some(
+        event =>
+          event.eventType === "collaboration.dag.node.skipped" &&
+          event.payload.nodeId === "skipped_child",
+      ),
+    ).toBe(true);
+  });
+
+  it("skip_dependents fails the run when every declared terminal path becomes unreachable", async () => {
+    const architect = new MockAdapter("architect", () => {
+      throw new Error("root failed");
+    });
+    const critic = new MockAdapter("critic", () => ({ type: "message", content: "SHOULD_NOT_RUN" }));
+    const implementer = new MockAdapter("implementer", () => ({ type: "message", content: "SHOULD_NOT_RUN" }));
+    const reviewer = new MockAdapter("reviewer", () => ({ type: "done", summary: "SHOULD_NOT_RUN" }));
+
+    const config = baseConfig();
+    const { prepared, byRole } = prepare(config, {
+      architect,
+      critic,
+      implementer,
+      reviewer,
+    });
+
+    const graph: CollaborationDagDefinition = {
+      version: 1,
+      nodes: [
+        {
+          id: "root",
+          participantId: byRole.architect!,
+          instruction: "root",
+          dependsOn: [],
+        },
+        {
+          id: "critic_path",
+          participantId: byRole.critic!,
+          instruction: "critic",
+          dependsOn: ["root"],
+        },
+        {
+          id: "implementer_path",
+          participantId: byRole.implementer!,
+          instruction: "impl",
+          dependsOn: ["root"],
+        },
+        {
+          id: "terminal",
+          participantId: byRole.reviewer!,
+          instruction: "terminal",
+          dependsOn: ["critic_path", "implementer_path"],
+          terminal: true,
+        },
+      ],
+    };
+
+    const persistence = new SqliteCollaborationDagPersistence();
+    const { controller: runController, audit } = controller(persistence);
+    const result = await runController.executeDagRun(
+      "ses_p5_controller",
+      config,
+      prepared,
+      graph,
+      {
+        failurePolicy: "skip_dependents",
+        budget: { maxParallelTurns: 2, maxRetriesPerParticipant: 0 },
+      },
+    );
+
+    expect(result.run.status).toBe("failed");
+    expect(result.nodes.find(node => node.id === "root")?.status).toBe("failed");
+    expect(result.nodes.find(node => node.id === "critic_path")?.status).toBe("skipped");
+    expect(result.nodes.find(node => node.id === "implementer_path")?.status).toBe("skipped");
+    expect(result.nodes.find(node => node.id === "terminal")?.status).toBe("skipped");
+    expect(critic.nextCalls).toBe(0);
+    expect(implementer.nextCalls).toBe(0);
+    expect(reviewer.nextCalls).toBe(0);
+    expect(
+      audit.events.filter(event => event.eventType === "collaboration.dag.node.skipped"),
+    ).toHaveLength(3);
+    expect(
+      audit.events.some(event => event.eventType === "collaboration.dag.failed"),
+    ).toBe(true);
+  });
+
 });
