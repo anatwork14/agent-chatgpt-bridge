@@ -1,6 +1,6 @@
 # Implementation Progress
 
-Last updated: 2026-09-17
+Last updated: 2026-09-18
 
 This file is evidence-based. A milestone is not marked live-complete only because unit tests or CI pass.
 
@@ -12,8 +12,8 @@ P1 codex-router provider plane                DONE + LIVE SIGN-OFF
 P2 provider health / explicit routing policy DONE + CI VALIDATED
 P3 native ACP external-agent adapter          IMPLEMENTED + CI GREEN + LIVE SIGN-OFF COMPLETE
 P3 real ACP interoperability                  DONE + LIVE SIGN-OFF
-P4 role-based collaboration                   NOT STARTED
-P5 bounded collaboration DAG                  NOT STARTED
+P4 role-based collaboration                   DONE + LIVE SIGN-OFF
+P5 bounded collaboration DAG                  IN PROGRESS
 ```
 
 The active consolidation branch is `release/p3-hardening`. It connects the previously orphaned feature-stack history to `main` with a two-parent integration commit while preserving the complete P1 -> P2 -> P3 ancestry. The older stacked PRs remain available as implementation history until the consolidation PR is accepted.
@@ -242,6 +242,64 @@ The integration commit reuses the exact P3 tree as its content and records both 
 [x] P3 live Antigravity ACP interoperability
 [x] P3 live Claude ACP interoperability
 [x] P3 live sign-off
-[ ] P4 role-based collaboration
+[x] P4 role-based collaboration
 [ ] P5 bounded multi-participant DAG
+```
+
+
+## P4 — role-based collaboration
+
+P4 was merged to `main` via PR #8 on 2026-09-18.
+
+Release evidence:
+
+```text
+feature head: 15efb03f02c0aa2a46c8e3ef6c9805045db01c8b
+merge commit: ac3cd2a56b7335b098251f0377f7d0620f0b9186
+CI run: 35346019961
+actionlint: PASS
+codex-router-integration: PASS
+ubuntu: PASS
+macOS: PASS
+windows: PASS
+Claude -> Antigravity -> Claude live collaboration smoke: PASS
+```
+
+Implemented through P4.8:
+
+- provider-independent role definitions;
+- explicit participant assignment;
+- sequential role workflow through RunController;
+- canonical transcript integration with SHA-256 payload integrity;
+- cancellation and deterministic failure propagation;
+- SQLite persistence and restart recovery;
+- structured audit/observability;
+- real Claude + Antigravity multi-participant live sign-off.
+
+**P4 RELEASE SIGN-OFF: YES**
+
+## P5 — bounded multi-participant collaboration DAG
+
+P5 started from the released P4 baseline on 2026-09-18.
+
+Tracking:
+
+- issue #9;
+- branch `feat/p5-bounded-collaboration-dag`;
+- specification `docs/P5_BOUNDED_COLLABORATION_DAG.md`.
+
+P5 keeps graph topology static, bounded, and validated before execution. It adds safe fan-out/fan-in collaboration without turning Agent Bridge into a general execution engine.
+
+Current slices:
+
+```text
+[ ] P5.0 DAG domain model + invariants
+[ ] P5.1 graph validation + deterministic planning
+[ ] P5.2 bounded ready-set scheduler / fan-out
+[ ] P5.3 fan-in provenance + canonical node outputs
+[ ] P5.4 SQLite persistence / migration
+[ ] P5.5 cancellation + failure propagation
+[ ] P5.6 recovery / idempotent resume
+[ ] P5.7 audit / observability
+[ ] P5.8 real Claude + Antigravity fan-out/fan-in live smoke
 ```
