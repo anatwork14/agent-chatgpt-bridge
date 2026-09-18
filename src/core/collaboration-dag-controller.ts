@@ -97,6 +97,531 @@ export class CollaborationDagController {
     emitCollaborationDagAuditEvent(this.auditStore, params);
   }
 
+  private loadValidatedState(runId: string) {
+    const run = this.persistence.getRun(runId);
+    if (!run) {
+      throw new BridgeError("run_not_found", `DAG run '${runId}' not found`, false);
+    }
+    const metadata = this.persistence.getMetadata(runId);
+    if (!metadata) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Role-based run '${runId}' is missing P5 DAG metadata`,
+        false,
+      );
+    }
+    const nodes = this.persistence.getNodes(runId);
+    const inputs = this.persistence.getInputs(runId);
+    const messagesByNode = this.persistence.getMessagesByNode(runId);
+    const state = deriveCollaborationDagPersistedState({
+      run,
+      metadata,
+      nodes,
+      inputs,
+      messagesByNode,
+    });
+    return { run, metadata, nodes, inputs, messagesByNode, state };
+  }
+
+  private preferredFinalSummary(
+    plan: CollaborationDagExecutionPlan,
+    messagesByNode: Readonly<Record<string, CollaborationMessageRecord>>,
+  ): string {
+    const preferred = [
+      ...plan.nodeIds.filter(nodeId => plan.nodesById[nodeId]!.terminal),
+      ...plan.sinkNodeIds,
+    ].reverse();
+    for (const nodeId of preferred) {
+      const message = messagesByNode[nodeId];
+      if (message) return message.content;
+    }
+    return "Collaboration DAG completed";
+  }
+
+  private cancelUnfinishedNodes(
+    runId: string,
+    nodes: readonly import("./collaboration-dag").CollaborationDagNodeRecord[],
+    completedAt: string,
+  ): void {
+    for (const node of nodes) {
+      if (
+        node.status === "completed" ||
+        node.status === "failed" ||
+        node.status === "skipped" ||
+        node.status === "cancelled"
+      ) {
+        continue;
+      }
+      this.persistence.markNodeTerminal({
+        runId,
+        nodeId: node.id,
+        status: "cancelled",
+        completedAt,
+      });
+    }
+  }
+
+  private propagatePersistedSkipDependents(
+    run: RoleBasedCollaborationRun,
+    metadata: import("./collaboration-dag").CollaborationDagRunMetadata,
+    completedAt: string,
+  ): number {
+    if (metadata.failurePolicy !== "skip_dependents") return 0;
+
+    const snapshot = this.loadValidatedState(run.id);
+    const statuses = new Map(snapshot.nodes.map(node => [node.id, node.status]));
+    const skipped = new Set<string>();
+
+    for (const failedNode of snapshot.nodes.filter(node => node.status === "failed")) {
+      const queue = [...snapshot.state.plan.nodesById[failedNode.id]!.dependents];
+      while (queue.length > 0) {
+        const nodeId = queue.shift()!;
+        if (skipped.has(nodeId)) continue;
+        skipped.add(nodeId);
+        const status = statuses.get(nodeId);
+        if (status === "pending" || status === "ready") {
+          const persisted = snapshot.nodes.find(node => node.id === nodeId)!;
+          this.persistence.markNodeTerminal({
+            runId: run.id,
+            nodeId,
+            status: "skipped",
+            completedAt,
+          });
+          statuses.set(nodeId, "skipped");
+          this.emit({
+            eventType: "collaboration.dag.node.skipped",
+            runId: run.id,
+            sessionId: run.sessionId,
+            createdAt: completedAt,
+            payload: {
+              schemaVersion: 1,
+              nodeId,
+              participantId: persisted.participantId,
+              roleId: persisted.roleId,
+            },
+          });
+        }
+        for (const childId of snapshot.state.plan.nodesById[nodeId]!.dependents) {
+          queue.push(childId);
+        }
+      }
+    }
+
+    return [...statuses.values()].filter(status => status === "skipped").length;
+  }
+
+  recoverRunningRuns(options?: {
+    readonly now?: () => number;
+    readonly clock?: () => string;
+  }): CollaborationDagRecoveryReport {
+    const now = options?.now ?? (() => Date.now());
+    const clock = options?.clock ?? (() => new Date().toISOString());
+    const orphaned = this.persistence.listRunsByStatuses(["running"]);
+    let pausedAtSafeBoundary = 0;
+    let interruptedNodesReconciled = 0;
+    let completedAtRecovery = 0;
+    let terminalAtRecovery = 0;
+
+    for (const run of orphaned) {
+      if (this.activeRuns.has(run.id)) continue;
+
+      try {
+        const before = this.loadValidatedState(run.id);
+        const interruptedBefore = before.state.interruptedNodeIds.length;
+        const activeParticipants = new Set<string>();
+
+        for (const nodeId of before.state.interruptedNodeIds) {
+          const node = before.nodes.find(item => item.id === nodeId)!;
+          if (activeParticipants.has(node.participantId)) {
+            throw new BridgeError(
+              "persistence_corruption",
+              `Multiple running DAG nodes share participant '${node.participantId}'`,
+              false,
+            );
+          }
+          activeParticipants.add(node.participantId);
+
+          const participant = run.participantsById[node.participantId];
+          if (!participant || participant.status !== "active") {
+            throw new BridgeError(
+              "persistence_corruption",
+              `Running DAG node '${node.id}' does not have an active participant snapshot`,
+              false,
+            );
+          }
+          this.persistence.reconcileInterruptedNode({
+            runId: run.id,
+            nodeId: node.id,
+            participant: {
+              ...participant,
+              status: "idle",
+            },
+            recoveredAt: clock(),
+          });
+          interruptedNodesReconciled++;
+        }
+
+        const recoveredAt = clock();
+        this.propagatePersistedSkipDependents(run, before.metadata, recoveredAt);
+        let current = this.loadValidatedState(run.id);
+        const nodes = current.nodes;
+        const hasFailed = nodes.some(node => node.status === "failed");
+        const hasCancelled = nodes.some(node => node.status === "cancelled");
+
+        if (hasCancelled || (current.metadata.failurePolicy === "fail_fast" && hasFailed)) {
+          this.cancelUnfinishedNodes(run.id, nodes, recoveredAt);
+          const status: RoleBasedCollaborationRunStatus = hasCancelled ? "cancelled" : "failed";
+          this.persistence.finalizeRun(run.id, {
+            status,
+            activeParticipantId: null,
+            completedAt: recoveredAt,
+            finalSummary: hasCancelled
+              ? "Recovered a partially cancelled DAG run"
+              : "Recovered a fail-fast DAG run after node failure",
+          });
+          terminalAtRecovery++;
+          this.emit({
+            eventType: "collaboration.dag.recovered",
+            runId: run.id,
+            sessionId: run.sessionId,
+            createdAt: recoveredAt,
+            payload: {
+              schemaVersion: 1,
+              recoveryKind: interruptedBefore > 0 ? "interrupted_nodes" : "safe_boundary",
+              interruptedNodeCount: interruptedBefore,
+              outcomeStatus: status,
+            },
+          });
+          continue;
+        }
+
+        current = this.loadValidatedState(run.id);
+        const allTerminal = current.nodes.every(node =>
+          node.status === "completed" ||
+          node.status === "failed" ||
+          node.status === "skipped" ||
+          node.status === "cancelled"
+        );
+
+        if (allTerminal) {
+          const hasCompletedTerminal = current.state.completedTerminalNodeIds.length > 0;
+          const hasAnyFailed = current.nodes.some(node => node.status === "failed");
+          const hasAnyCancelled = current.nodes.some(node => node.status === "cancelled");
+          let status: RoleBasedCollaborationRunStatus;
+          if (hasAnyCancelled) status = "cancelled";
+          else if (current.metadata.failurePolicy === "skip_dependents" && hasAnyFailed && !hasCompletedTerminal) {
+            status = "failed";
+          } else if (hasAnyFailed && current.metadata.failurePolicy === "fail_fast") {
+            status = "failed";
+          } else {
+            status = "completed";
+          }
+
+          this.persistence.finalizeRun(run.id, {
+            status,
+            activeParticipantId: null,
+            completedAt: recoveredAt,
+            finalSummary:
+              status === "completed"
+                ? this.preferredFinalSummary(current.state.plan, current.messagesByNode)
+                : "Recovered terminal DAG state",
+          });
+          if (status === "completed") completedAtRecovery++;
+          else terminalAtRecovery++;
+          this.emit({
+            eventType: "collaboration.dag.recovered",
+            runId: run.id,
+            sessionId: run.sessionId,
+            createdAt: recoveredAt,
+            payload: {
+              schemaVersion: 1,
+              recoveryKind: interruptedBefore > 0 ? "interrupted_nodes" : "safe_boundary",
+              interruptedNodeCount: interruptedBefore,
+              outcomeStatus: status,
+            },
+          });
+          continue;
+        }
+
+        const nowMs = now();
+        const originMs = requireValidStartedAt(run, nowMs);
+        if (nowMs - originMs >= run.budget.maxWallClockMs) {
+          this.cancelUnfinishedNodes(run.id, current.nodes, recoveredAt);
+          this.persistence.finalizeRun(run.id, {
+            status: "timed_out",
+            activeParticipantId: null,
+            completedAt: recoveredAt,
+            finalSummary: `Exceeded maximum wall-clock deadline (${run.budget.maxWallClockMs} ms)`,
+          });
+          terminalAtRecovery++;
+          this.emit({
+            eventType: "collaboration.dag.recovered",
+            runId: run.id,
+            sessionId: run.sessionId,
+            createdAt: recoveredAt,
+            payload: {
+              schemaVersion: 1,
+              recoveryKind: interruptedBefore > 0 ? "interrupted_nodes" : "safe_boundary",
+              interruptedNodeCount: interruptedBefore,
+              outcomeStatus: "timed_out",
+            },
+          });
+          continue;
+        }
+
+        if (current.state.totalAttemptsStarted >= run.budget.maxTurns) {
+          this.cancelUnfinishedNodes(run.id, current.nodes, recoveredAt);
+          this.persistence.finalizeRun(run.id, {
+            status: "budget_exhausted",
+            activeParticipantId: null,
+            completedAt: recoveredAt,
+            finalSummary: `Exceeded maximum allowed turns (${run.budget.maxTurns})`,
+          });
+          terminalAtRecovery++;
+          this.emit({
+            eventType: "collaboration.dag.recovered",
+            runId: run.id,
+            sessionId: run.sessionId,
+            createdAt: recoveredAt,
+            payload: {
+              schemaVersion: 1,
+              recoveryKind: interruptedBefore > 0 ? "interrupted_nodes" : "safe_boundary",
+              interruptedNodeCount: interruptedBefore,
+              outcomeStatus: "budget_exhausted",
+            },
+          });
+          continue;
+        }
+
+        this.persistence.finalizeRun(run.id, {
+          status: "paused",
+          activeParticipantId: null,
+          completedAt: null,
+          finalSummary: null,
+        });
+        if (interruptedBefore === 0) pausedAtSafeBoundary++;
+        this.emit({
+          eventType: "collaboration.dag.recovered",
+          runId: run.id,
+          sessionId: run.sessionId,
+          createdAt: recoveredAt,
+          payload: {
+            schemaVersion: 1,
+            recoveryKind: interruptedBefore > 0 ? "interrupted_nodes" : "safe_boundary",
+            interruptedNodeCount: interruptedBefore,
+            outcomeStatus: "paused",
+          },
+        });
+      } catch (error) {
+        throw new BridgeError(
+          "collaboration_dag_recovery_failed",
+          `Failed to recover DAG run '${run.id}': ${errorMessage(error)}`,
+          false,
+        );
+      }
+    }
+
+    return {
+      examined: orphaned.length,
+      pausedAtSafeBoundary,
+      interruptedNodesReconciled,
+      completedAtRecovery,
+      terminalAtRecovery,
+      failedRunIds: [],
+    };
+  }
+
+  prepareResume(
+    runId: string,
+    options?: CollaborationDagResumeOptions,
+  ): readonly PersistedParticipant[] {
+    if (this.activeRuns.has(runId) || this.resumingRuns.has(runId)) {
+      throw new BridgeError("resume_in_progress", `DAG run '${runId}' is already active/resuming`, false);
+    }
+
+    const snapshot = this.loadValidatedState(runId);
+    if (snapshot.run.status !== "paused") {
+      throw new BridgeError(
+        "invalid_state_transition",
+        `Cannot resume DAG run '${runId}' with status '${snapshot.run.status}' (must be 'paused')`,
+        false,
+      );
+    }
+    if (snapshot.state.interruptedNodeIds.length > 0) {
+      throw new BridgeError(
+        "collaboration_dag_recovery_required",
+        `DAG run '${runId}' still contains unreconciled running nodes`,
+        false,
+      );
+    }
+
+    const replayNodes = snapshot.nodes.filter(
+      node => node.status === "ready" && node.error?.code === "daemon_restarted",
+    );
+    if (replayNodes.length > 0 && options?.allowReplayInterruptedNodes !== true) {
+      throw new BridgeError(
+        "resume_replay_confirmation_required",
+        `DAG run '${runId}' has ${replayNodes.length} interrupted node attempt(s); explicit replay acknowledgement is required`,
+        false,
+      );
+    }
+
+    const now = options?.now ?? (() => Date.now());
+    const clock = options?.clock ?? (() => new Date().toISOString());
+    const nowMs = now();
+    const originMs = requireValidStartedAt(snapshot.run, nowMs);
+    if (nowMs - originMs >= snapshot.run.budget.maxWallClockMs) {
+      const completedAt = clock();
+      this.cancelUnfinishedNodes(runId, snapshot.nodes, completedAt);
+      this.persistence.finalizeRun(runId, {
+        status: "timed_out",
+        activeParticipantId: null,
+        completedAt,
+        finalSummary: `Exceeded maximum wall-clock deadline (${snapshot.run.budget.maxWallClockMs} ms)`,
+      });
+      throw new BridgeError("timed_out", `DAG run '${runId}' wall-clock budget is exhausted`, false);
+    }
+    if (snapshot.state.totalAttemptsStarted >= snapshot.run.budget.maxTurns) {
+      const completedAt = clock();
+      this.cancelUnfinishedNodes(runId, snapshot.nodes, completedAt);
+      this.persistence.finalizeRun(runId, {
+        status: "budget_exhausted",
+        activeParticipantId: null,
+        completedAt,
+        finalSummary: `Exceeded maximum allowed turns (${snapshot.run.budget.maxTurns})`,
+      });
+      throw new BridgeError("budget_exhausted", `DAG run '${runId}' turn budget is exhausted`, false);
+    }
+
+    return this.persistence.getParticipants(runId);
+  }
+
+  async resume(
+    runId: string,
+    prepared: PreparedRoleParticipants,
+    options?: CollaborationDagResumeOptions,
+  ): Promise<RoleBasedCollaborationRun> {
+    this.prepareResume(runId, options);
+    if (this.resumingRuns.has(runId)) {
+      throw new BridgeError("resume_in_progress", `DAG run '${runId}' is already being resumed`, false);
+    }
+    this.resumingRuns.add(runId);
+
+    try {
+      const snapshot = this.loadValidatedState(runId);
+      const persistedParticipants = this.persistence.getParticipants(runId);
+      if (
+        prepared.plans.length !== persistedParticipants.length ||
+        prepared.runtimes.length !== persistedParticipants.length
+      ) {
+        throw new BridgeError(
+          "persistence_corruption",
+          `Restored participant count mismatch for DAG run '${runId}'`,
+          false,
+        );
+      }
+      for (const persisted of persistedParticipants) {
+        const plan = prepared.plans.find(item => item.participantId === persisted.id);
+        const runtime = prepared.runtimes.find(item => item.participantId === persisted.id);
+        if (
+          !plan ||
+          !runtime ||
+          plan.roleId !== persisted.roleId ||
+          plan.adapterId !== persisted.adapterId ||
+          runtime.roleId !== persisted.roleId
+        ) {
+          throw new BridgeError(
+            "persistence_corruption",
+            `Restored participant '${persisted.id}' does not match persisted provenance`,
+            false,
+          );
+        }
+      }
+
+      this.persistence.finalizeRun(runId, {
+        status: "running",
+        activeParticipantId: null,
+        completedAt: null,
+        finalSummary: null,
+      });
+      const runningRun = this.persistence.getRun(runId);
+      if (!runningRun) {
+        throw new BridgeError("persistence_corruption", `DAG run '${runId}' disappeared during resume`, false);
+      }
+
+      const rootAbortController = new AbortController();
+      const onSignalAbort = () => rootAbortController.abort(options?.signal?.reason);
+      if (options?.signal?.aborted) {
+        rootAbortController.abort(options.signal.reason);
+      } else {
+        options?.signal?.addEventListener("abort", onSignalAbort, { once: true });
+      }
+
+      const control: ActiveCollaborationDagRunControl = {
+        runId,
+        rootAbortController,
+        persistence: this.persistence,
+        attemptsStarted: snapshot.state.totalAttemptsStarted,
+      };
+      this.activeRuns.set(runId, control);
+
+      const interruptedReplayCount = snapshot.nodes.filter(
+        node => node.status === "ready" && node.error?.code === "daemon_restarted",
+      ).length;
+      this.emit({
+        eventType: "collaboration.dag.resumed",
+        runId,
+        sessionId: runningRun.sessionId,
+        payload: {
+          schemaVersion: 1,
+          interruptedReplayCount,
+          completedNodeCount: snapshot.nodes.filter(node => node.status === "completed").length,
+          pendingNodeCount: snapshot.nodes.filter(node =>
+            node.status === "pending" || node.status === "ready"
+          ).length,
+        },
+      });
+
+      const executionOptions: CollaborationDagExecutionOptions = {
+        signal: options?.signal,
+        clock: options?.clock,
+        now: options?.now,
+        failurePolicy: snapshot.metadata.failurePolicy,
+      };
+      const settlement = this.executeLoop(
+        runningRun,
+        prepared,
+        snapshot.state.plan,
+        control,
+        executionOptions,
+        snapshot.state.statusesByNode,
+      )
+        .catch(error => {
+          if (error instanceof BridgeError && error.code === "collaboration_persistence_failed") {
+            throw error;
+          }
+          return this.settleFailure(
+            runningRun,
+            snapshot.state.plan,
+            control,
+            error,
+            options?.clock ?? (() => new Date().toISOString()),
+          );
+        })
+        .finally(() => {
+          options?.signal?.removeEventListener("abort", onSignalAbort);
+          this.activeRuns.delete(runId);
+          this.settlements.delete(runId);
+        });
+
+      this.settlements.set(runId, settlement);
+      return runningRun;
+    } finally {
+      this.resumingRuns.delete(runId);
+    }
+  }
+
+
   async start(
     sessionId: string,
     config: CollaborationConfig,
