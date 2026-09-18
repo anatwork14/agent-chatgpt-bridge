@@ -165,6 +165,22 @@ export type AgentDecision =
       retryable: boolean;
     };
 
+export interface PriorCollaborationTurn {
+  readonly participantId: string;
+  readonly roleId: string;
+  readonly decisionType: "message" | "done" | "pause" | "error";
+  readonly text: string;
+}
+
+export interface CollaborationTurnContext {
+  readonly participantId: string;
+  readonly roleId: string;
+  readonly roleName: string;
+  readonly systemInstructions: string;
+  readonly sequenceIndex: number;
+  readonly priorTurns: readonly PriorCollaborationTurn[];
+}
+
 export interface AgentTurnInput {
   runId: string;
   objective: string;
@@ -180,6 +196,7 @@ export interface AgentTurnInput {
   workspace?: {
     cwd?: string;
   };
+  collaboration?: CollaborationTurnContext;
 }
 
 export interface ExternalAgentAdapterConfig {

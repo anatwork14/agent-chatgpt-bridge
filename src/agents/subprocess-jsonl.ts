@@ -192,7 +192,7 @@ export class SubprocessJsonlAdapter implements ExternalAgentAdapter {
         readline.close();
       };
 
-      const payload = {
+      const payload: Record<string, unknown> = {
         version: 1,
         type: "turn",
         run_id: input.runId,
@@ -202,6 +202,22 @@ export class SubprocessJsonlAdapter implements ExternalAgentAdapter {
         transcript: input.transcript,
         workspace: input.workspace,
       };
+
+      if (input.collaboration) {
+        payload.collaboration = {
+          participant_id: input.collaboration.participantId,
+          role_id: input.collaboration.roleId,
+          role_name: input.collaboration.roleName,
+          system_instructions: input.collaboration.systemInstructions,
+          sequence_index: input.collaboration.sequenceIndex,
+          prior_turns: input.collaboration.priorTurns.map(t => ({
+            participant_id: t.participantId,
+            role_id: t.roleId,
+            decision_type: t.decisionType,
+            text: t.text,
+          })),
+        };
+      }
 
       child.stdin.on("error", error => {
         if (!settled) fail(new BridgeError("agent_adapter_failed", `Agent stdin failed: ${error.message}`, false));

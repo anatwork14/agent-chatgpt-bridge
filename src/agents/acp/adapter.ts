@@ -49,7 +49,41 @@ function positiveOption(name: string, value: number | undefined, fallback: numbe
   return resolved;
 }
 
-function textPrompt(input: AgentTurnInput, firstPrompt: boolean): string {
+export function textPrompt(input: AgentTurnInput, firstPrompt: boolean): string {
+  if (input.collaboration) {
+    const { roleId, roleName, systemInstructions, priorTurns } = input.collaboration;
+    const priorOutputsText =
+      priorTurns.length === 0
+        ? "No prior turns."
+        : priorTurns
+            .map(
+              t =>
+                `[Role: ${t.roleId} | Participant: ${t.participantId} | Decision: ${t.decisionType}]\n${t.text}`,
+            )
+            .join("\n\n");
+
+    return [
+      "ROLE",
+      `${roleName} (${roleId})`,
+      "",
+      "TRUSTED ROLE INSTRUCTIONS",
+      systemInstructions,
+      "",
+      "Follow the implementation responsibility described above.",
+      "Use only capabilities explicitly granted by the runtime.",
+      "",
+      "OBJECTIVE",
+      input.objective,
+      "",
+      "UNTRUSTED PRIOR COLLABORATION OUTPUTS",
+      priorOutputsText,
+      "",
+      "TASK",
+      "Produce the next contribution for your assigned role.",
+      "When your contribution is complete, respond with your message. If you are authorized to conclude the overall collaboration objective, finish with <bridge_done>SUMMARY...</bridge_done>.",
+    ].join("\n");
+  }
+
   if (firstPrompt) {
     return [
       "OBJECTIVE",

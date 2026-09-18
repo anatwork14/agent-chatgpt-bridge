@@ -69,3 +69,48 @@ test("Subprocess JSONL enforces turn timeout", async () => {
   const adapter = bunScript(`setInterval(() => {}, 1000);`, { timeoutMs: 25 });
   expect(adapter.next(input, {})).rejects.toMatchObject({ code: "agent_adapter_timeout" });
 });
+
+test("Subprocess JSONL handles additive collaboration payload", async () => {
+  const adapter = bunScript(`
+    const readline = require("readline");
+    const rl = readline.createInterface({ input: process.stdin });
+    rl.on("line", line => {
+      const parsed = JSON.parse(line);
+      if (parsed.collaboration) {
+        console.log(JSON.stringify({
+          version: 1,
+          type: "message",
+          content: "Role: " + parsed.collaboration.role_id + "; PriorTurns: " + parsed.collaboration.prior_turns.length
+        }));
+      } else {
+        console.log(JSON.stringify({ version: 1, type: "message", content: "legacy" }));
+      }
+    });
+  `);
+
+  // Legacy call without collaboration
+  const legacyResult = await adapter.next(input, {});
+  expect(legacyResult).toEqual({ type: "message", content: "legacy", attachments: undefined });
+
+  // P4 role call with collaboration
+  const roleInput = {
+    ...input,
+    collaboration: {
+      participantId: "part_verifier_1",
+      roleId: "verifier",
+      roleName: "Automated Verifier",
+      systemInstructions: "Run verification script.",
+      sequenceIndex: 2,
+      priorTurns: [
+        {
+          participantId: "part_impl_1",
+          roleId: "implementer",
+          decisionType: "message" as const,
+          text: "patch ready",
+        },
+      ],
+    },
+  };
+  const roleResult = await adapter.next(roleInput, {});
+  expect(roleResult).toEqual({ type: "message", content: "Role: verifier; PriorTurns: 1", attachments: undefined });
+});

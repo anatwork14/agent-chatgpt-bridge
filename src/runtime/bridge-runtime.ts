@@ -11,11 +11,14 @@ import { AuditStore } from "../persistence/audit-store";
 import { closeDatabase, initDatabase } from "../persistence/database";
 import { MessageStore } from "../persistence/message-store";
 import { RunStore } from "../persistence/run-store";
+import { SqliteCollaborationPersistence } from "../persistence/sqlite-collaboration-persistence";
 import { SessionStore } from "../persistence/session-store";
 import { TurnStore } from "../persistence/turn-store";
 import { SessionManager } from "../core/session-manager";
 import { RunController } from "../core/run-controller";
 import { BridgeError } from "../core/errors";
+import { restorePersistedParticipants } from "../agents/participant-factory";
+
 import type { ConversationProvider } from "../providers/provider";
 import type { ProviderHealthTrackerOptions } from "../providers/health";
 import type { ProviderRoutingPolicy } from "../providers/policy";
@@ -53,8 +56,11 @@ export interface BridgeRuntime {
   port: number;
   baseUrl: string;
   recoveredInterruptedTurns: number;
+  /** Number of P4 role-based runs reconciled from 'running' → 'paused' at startup. */
+  recoveredRoleBasedRuns: number;
   close(): Promise<void>;
 }
+
 
 export interface BridgeRuntimeDependencies {
   /** Replaces the normal ChatGPT Web primary provider, mainly for tests. */
@@ -200,6 +206,7 @@ export async function createBridgeRuntime(
   const recoveredInterruptedTurns = sessionManager.recoverInterruptedTurns();
 
   const runStore = new RunStore();
+  const collaborationPersistence = new SqliteCollaborationPersistence();
   const runController = new RunController(
     runStore,
     sessionManager,
@@ -256,7 +263,25 @@ export async function createBridgeRuntime(
       }
       throw new BridgeError("agent_adapter_failed", `Unsupported agent adapter: ${id}`, false);
     },
+    collaborationPersistence,
+    restorePersistedParticipants,
   );
+
+  // P4.6: Reconcile any role-based runs that were left in status=running by the previous
+  // daemon instance. This MUST run before any new runs can start.
+  let recoveryReport;
+  try {
+    recoveryReport = runController.recoverRoleBasedRuns();
+  } catch (recoveryError) {
+    await Promise.allSettled([
+      sessionManager.shutdown(),
+      closeChatGptBrowserWorkers(),
+    ]);
+    closeDatabase();
+    throw recoveryError;
+  }
+  const recoveredRoleBasedRuns = recoveryReport.examined;
+
 
   const apiToken = dependencies.apiToken ?? bridgeApiToken(config);
   const listModels = async () => registry.listModels();
@@ -327,6 +352,8 @@ export async function createBridgeRuntime(
     port,
     baseUrl: `http://${host}:${port}/bridge/v1`,
     recoveredInterruptedTurns,
+    recoveredRoleBasedRuns,
     close,
   };
+
 }
