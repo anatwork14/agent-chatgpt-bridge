@@ -214,7 +214,9 @@ export class SqliteCollaborationDagPersistence implements CollaborationDagPersis
   }
 
   listRunsByStatuses(statuses: readonly string[]): RoleBasedCollaborationRun[] {
-    return this.runStore.listByStatuses(statuses);
+    return this.runStore
+      .listByStatuses(statuses)
+      .filter(run => this.dagStore.getMetadata(run.id) !== null);
   }
 
   getRun(runId: string): RoleBasedCollaborationRun | null {
