@@ -1,7 +1,7 @@
 # P5: Bounded Multi-Participant Collaboration DAG Specification
 
 **Document Version:** 1.0.0  
-**Status:** DRAFT / APPROVED FOR IMPLEMENTATION  
+**Status:** IMPLEMENTED / LIVE SIGN-OFF PENDING  
 **Target Milestone:** P5 (`feat/p5-bounded-collaboration-dag`)  
 **Baseline:** P4 merged to `main` at `ac3cd2a56b7335b098251f0377f7d0620f0b9186`  
 **Tracking Issue:** #9  
@@ -607,66 +607,77 @@ Additional P5 requirements:
 
 ### P5.0 — DAG domain model + invariants
 
-- [ ] DAG types
-- [ ] node statuses / terminal helpers
-- [ ] hard bounds
-- [ ] backward-compatible P4 budget widening
-- [ ] pure invariant tests
+- [x] DAG types
+- [x] node statuses / terminal helpers
+- [x] hard bounds
+- [x] backward-compatible P4 budget widening
+- [x] pure invariant tests
 
 ### P5.1 — Graph validation + deterministic planning
 
-- [ ] structural validator
-- [ ] cycle detection
-- [ ] deterministic topological planner
-- [ ] roots/sinks/dependents plan
-- [ ] malformed graph tests
+- [x] structural validator
+- [x] cycle detection
+- [x] deterministic topological planner
+- [x] roots/sinks/dependents plan
+- [x] malformed graph tests
 
 ### P5.2 — Bounded ready-set scheduler
 
-- [ ] ready queue
-- [ ] global parallel cap
-- [ ] per-participant serialization
-- [ ] fan-out execution
-- [ ] deterministic dispatch tests
+- [x] ready queue
+- [x] global parallel cap
+- [x] per-participant serialization
+- [x] fan-out execution
+- [x] deterministic dispatch tests
 
 ### P5.3 — Fan-in provenance + canonical outputs
 
-- [ ] deterministic input assembly
-- [ ] predecessor hash verification
-- [ ] provenance persistence contract
-- [ ] sibling output isolation tests
+- [x] deterministic input assembly
+- [x] predecessor hash verification
+- [x] provenance persistence contract
+- [x] sibling output isolation tests
 
 ### P5.4 — SQLite persistence
 
-- [ ] migration v3
-- [ ] node store
-- [ ] edge store
-- [ ] provenance store
-- [ ] atomic completion transaction
-- [ ] disk durability tests
+- [x] migration v3
+- [x] node store
+- [x] edge store
+- [x] provenance store
+- [x] atomic completion transaction
+- [x] disk durability tests
 
 ### P5.5 — Cancellation + failure propagation
 
-- [ ] fail-fast cancellation
-- [ ] skip-dependent propagation
-- [ ] active sibling teardown
-- [ ] bounded retries
-- [ ] exact terminal state tests
+- [x] fail-fast cancellation
+- [x] skip-dependent propagation
+- [x] active sibling teardown
+- [x] bounded retries
+- [x] exact terminal state tests
 
 ### P5.6 — Recovery / resume
 
-- [ ] interrupted-node reconciliation
-- [ ] ready-set reconstruction
-- [ ] completed-node no-replay guarantee
-- [ ] idempotent resume tests
+- [x] interrupted-node reconciliation
+- [x] ready-set reconstruction
+- [x] completed-node no-replay guarantee
+- [x] idempotent resume tests
 
 ### P5.7 — Audit / observability
 
-- [ ] DAG/node audit events
-- [ ] deterministic event relationships
-- [ ] data-minimization tests
+- [x] DAG/node audit events
+- [x] deterministic event relationships
+- [x] data-minimization tests
 
 ### P5.8 — Live multi-agent DAG smoke
+
+Status: **PENDING REAL LIVE EXECUTION**
+
+Run:
+
+```bash
+bun run smoke:p5:live
+```
+
+Harness: `scripts/smoke-p5-collaboration-live.ts`  
+Sign-off record: `docs/P5_COLLABORATION_SMOKE.md`
 
 Validated topology:
 
