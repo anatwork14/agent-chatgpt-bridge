@@ -168,3 +168,43 @@ describe("P5 bounded collaboration DAG scheduler", () => {
     }
   });
 });
+
+
+it("reports external abort as collaboration_dag_cancelled and aborts active nodes", async () => {
+  const p = plan({
+    version: 1,
+    nodes: [
+      { id: "a", participantId: "p_arch", instruction: "a", dependsOn: [] },
+      { id: "b", participantId: "p_a", instruction: "b", dependsOn: [] },
+    ],
+  });
+  const controller = new AbortController();
+  let abortedCount = 0;
+
+  const execution = runBoundedCollaborationDag(p, {
+    maxParallelTurns: 2,
+    signal: controller.signal,
+    async executeNode(_node, { signal }) {
+      return await new Promise<string>((resolve, reject) => {
+        const timer = setTimeout(() => resolve("late"), 100);
+        signal.addEventListener("abort", () => {
+          clearTimeout(timer);
+          abortedCount++;
+          reject(new DOMException("cancelled", "AbortError"));
+        }, { once: true });
+      });
+    },
+  });
+
+  await new Promise(resolve => setTimeout(resolve, 5));
+  controller.abort(new DOMException("user cancelled", "AbortError"));
+
+  try {
+    await execution;
+    throw new Error("expected cancellation");
+  } catch (error) {
+    expect(error).toBeInstanceOf(BridgeError);
+    expect((error as BridgeError).code).toBe("collaboration_dag_cancelled");
+  }
+  expect(abortedCount).toBe(2);
+});
