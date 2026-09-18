@@ -1,6 +1,7 @@
 import {
   P5_LIMITS,
   type CollaborationDagExecutionPlan,
+  type CollaborationDagFailurePolicy,
   type CollaborationDagPlannedNode,
 } from "./collaboration-dag";
 import { BridgeError } from "./errors";
@@ -21,6 +22,7 @@ export interface CollaborationDagSchedulerTransition {
 
 export interface CollaborationDagSchedulerOptions<T> {
   readonly maxParallelTurns: number;
+  readonly failurePolicy?: CollaborationDagFailurePolicy;
   readonly signal?: AbortSignal;
   readonly executeNode: (
     node: CollaborationDagPlannedNode,
@@ -34,6 +36,8 @@ export interface CollaborationDagSchedulerResult<T> {
   readonly dispatchOrder: readonly string[];
   readonly completionOrder: readonly string[];
   readonly maxObservedParallelism: number;
+  readonly failedNodeIds: readonly string[];
+  readonly skippedNodeIds: readonly string[];
 }
 
 /**
@@ -58,6 +62,15 @@ export async function runBoundedCollaborationDag<T>(
     );
   }
 
+  const failurePolicy = options.failurePolicy ?? "fail_fast";
+  if (failurePolicy !== "fail_fast" && failurePolicy !== "skip_dependents") {
+    throw new BridgeError(
+      "invalid_collaboration_dag_failure_policy",
+      `Unsupported DAG failure policy '${String(failurePolicy)}'`,
+      false,
+    );
+  }
+
   const rootAbort = new AbortController();
   const onExternalAbort = () => rootAbort.abort(options.signal?.reason);
   if (options.signal?.aborted) {
@@ -70,6 +83,9 @@ export async function runBoundedCollaborationDag<T>(
     plan.nodeIds.map(id => [id, "pending"]),
   );
   const completed = new Set<string>();
+  const settledNodes = new Set<string>();
+  const failedNodeIds: string[] = [];
+  const skippedNodeIds: string[] = [];
   const activeParticipants = new Set<string>();
   const active = new Map<
     string,
@@ -103,11 +119,12 @@ export async function runBoundedCollaborationDag<T>(
   };
 
   try {
-    while (completed.size < plan.nodeIds.length) {
+    while (settledNodes.size < plan.nodeIds.length) {
       if (rootAbort.signal.aborted && active.size === 0) {
         for (const nodeId of plan.nodeIds) {
           if (statuses.get(nodeId) === "pending" || statuses.get(nodeId) === "ready") {
             transition(nodeId, "cancelled");
+            settledNodes.add(nodeId);
           }
         }
         throw new BridgeError(
@@ -156,7 +173,7 @@ export async function runBoundedCollaborationDag<T>(
         if (rootAbort.signal.aborted) {
           continue;
         }
-        const remaining = plan.nodeIds.filter(id => !completed.has(id));
+        const remaining = plan.nodeIds.filter(id => !settledNodes.has(id));
         throw new BridgeError(
           "collaboration_dag_deadlock",
           `Validated DAG scheduler made no progress; remaining nodes: ${remaining.join(", ")}`,
@@ -179,6 +196,7 @@ export async function runBoundedCollaborationDag<T>(
       if (settled.ok) {
         transition(settled.nodeId, "completed");
         completed.add(settled.nodeId);
+        settledNodes.add(settled.nodeId);
         outputsByNode[settled.nodeId] = settled.output;
         completionOrder.push(settled.nodeId);
         continue;
@@ -186,7 +204,34 @@ export async function runBoundedCollaborationDag<T>(
 
       const externallyCancelled = rootAbort.signal.aborted;
       transition(settled.nodeId, externallyCancelled ? "cancelled" : "failed");
+      settledNodes.add(settled.nodeId);
+
+      if (!externallyCancelled && failurePolicy === "skip_dependents") {
+        failedNodeIds.push(settled.nodeId);
+
+        // Deterministically skip every transitive dependent. Independent branches continue.
+        const queue = [...plan.nodesById[settled.nodeId]!.dependents];
+        const seen = new Set<string>();
+        while (queue.length > 0) {
+          const dependentId = queue.shift()!;
+          if (seen.has(dependentId)) continue;
+          seen.add(dependentId);
+
+          const status = statuses.get(dependentId);
+          if (status === "pending" || status === "ready") {
+            transition(dependentId, "skipped");
+            settledNodes.add(dependentId);
+            skippedNodeIds.push(dependentId);
+          }
+          for (const childId of plan.nodesById[dependentId]!.dependents) {
+            queue.push(childId);
+          }
+        }
+        continue;
+      }
+
       if (!externallyCancelled) {
+        failedNodeIds.push(settled.nodeId);
         rootAbort.abort(
           settled.error instanceof Error
             ? settled.error
@@ -204,8 +249,10 @@ export async function runBoundedCollaborationDag<T>(
         }
         if (statuses.get(sibling.nodeId) === "running") {
           transition(sibling.nodeId, sibling.ok ? "completed" : "cancelled");
+          settledNodes.add(sibling.nodeId);
           if (sibling.ok) {
             completed.add(sibling.nodeId);
+            settledNodes.add(sibling.nodeId);
             outputsByNode[sibling.nodeId] = sibling.output;
             completionOrder.push(sibling.nodeId);
           }
@@ -232,6 +279,8 @@ export async function runBoundedCollaborationDag<T>(
       dispatchOrder,
       completionOrder,
       maxObservedParallelism,
+      failedNodeIds,
+      skippedNodeIds,
     };
   } finally {
     options.signal?.removeEventListener("abort", onExternalAbort);
