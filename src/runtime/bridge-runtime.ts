@@ -12,6 +12,7 @@ import { closeDatabase, initDatabase } from "../persistence/database";
 import { MessageStore } from "../persistence/message-store";
 import { RunStore } from "../persistence/run-store";
 import { SqliteCollaborationPersistence } from "../persistence/sqlite-collaboration-persistence";
+import { SqliteCollaborationDagPersistence } from "../persistence/sqlite-collaboration-dag-persistence";
 import { SessionStore } from "../persistence/session-store";
 import { TurnStore } from "../persistence/turn-store";
 import { SessionManager } from "../core/session-manager";
@@ -207,6 +208,7 @@ export async function createBridgeRuntime(
 
   const runStore = new RunStore();
   const collaborationPersistence = new SqliteCollaborationPersistence();
+  const collaborationDagPersistence = new SqliteCollaborationDagPersistence();
   const runController = new RunController(
     runStore,
     sessionManager,
@@ -265,6 +267,7 @@ export async function createBridgeRuntime(
     },
     collaborationPersistence,
     restorePersistedParticipants,
+    collaborationDagPersistence,
   );
 
   // P4.6: Reconcile any role-based runs that were left in status=running by the previous
