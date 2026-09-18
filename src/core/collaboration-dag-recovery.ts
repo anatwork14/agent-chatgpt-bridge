@@ -79,7 +79,7 @@ export function deriveCollaborationDagPersistedState(params: {
   const statusesByNode: Record<string, CollaborationDagNodeStatus> = {};
   const interruptedNodeIds: string[] = [];
   const completedTerminalNodeIds: string[] = [];
-  let totalAttemptsStarted = 0;
+  let persistedAttemptIndexSum = 0;
 
   for (const nodeId of plan.nodeIds) {
     const planned = plan.nodesById[nodeId]!;
@@ -185,7 +185,7 @@ export function deriveCollaborationDagPersistedState(params: {
     }
 
     statusesByNode[nodeId] = persisted.status;
-    totalAttemptsStarted += persisted.attempt;
+    persistedAttemptIndexSum += persisted.attempt;
   }
 
   for (const persisted of nodes) {
@@ -275,10 +275,28 @@ export function deriveCollaborationDagPersistedState(params: {
     }
   }
 
-  if (totalAttemptsStarted > run.budget.maxTurns) {
+  if (inputs.length !== run.turnHistory.length) {
     throw new BridgeError(
       "persistence_corruption",
-      `DAG run '${run.id}' persisted more attempts than maxTurns`,
+      `DAG run '${run.id}' turn/input provenance counts do not match`,
+      false,
+    );
+  }
+
+  const interruptedAttemptCount = nodes.filter(
+    node =>
+      node.status === "running" ||
+      (node.status === "ready" && node.error?.code === "daemon_restarted"),
+  ).length;
+  const totalAttemptsStarted = run.turnHistory.length + interruptedAttemptCount;
+
+  if (
+    totalAttemptsStarted > run.budget.maxTurns ||
+    persistedAttemptIndexSum > plan.nodeIds.length * (run.budget.maxRetriesPerParticipant + 1)
+  ) {
+    throw new BridgeError(
+      "persistence_corruption",
+      `DAG run '${run.id}' persisted impossible attempt accounting`,
       false,
     );
   }
