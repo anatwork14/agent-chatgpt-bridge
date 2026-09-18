@@ -251,7 +251,7 @@ Requirements:
 
 ### P5 — bounded multi-participant collaboration DAG
 
-**Status: IN PROGRESS — TRACKING ISSUE #9**
+**Status: DONE + LIVE SIGN-OFF**
 
 Generalize the current two-party relay into a bounded graph:
 
@@ -316,12 +316,9 @@ wrappers               > large upstream browser refactors
 ## Current implementation sequence
 
 1. Preserve the released P4 role-based collaboration baseline on `main`.
-2. Implement P5.0 DAG domain types and hard invariants.
-3. Implement P5.1 deterministic graph validation and topological planning.
-4. Add the bounded ready-set scheduler with global parallelism and per-participant serialization.
-5. Add deterministic fan-in provenance, SQLite v3 persistence, cancellation/failure propagation, and recovery.
-6. Complete DAG audit coverage and a real Claude + Antigravity fan-out/fan-in live smoke.
-7. Merge P5 only after exact-head cross-platform CI and live release evidence.
-8. Integrate upward with ARC/CompanyOS through explicit APIs/events rather than merging execution-plane responsibilities into Agent Bridge.
+2. P5 bounded multi-participant collaboration DAG implementation is complete.
+3. P5 real Claude + Antigravity fan-out/fan-in and simultaneous cancellation sign-off is complete.
+4. Merge P5 only after final exact-head CI on the documentation/status-only release-record head.
+5. Integrate upward with ARC/CompanyOS through explicit APIs/events rather than merging execution-plane responsibilities into Agent Bridge.
 
 Do not begin a later milestone by weakening an earlier milestone's correctness, security, cancellation, persistence, or audit guarantees.
