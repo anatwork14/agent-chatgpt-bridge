@@ -570,23 +570,24 @@ export class CollaborationDagController {
         startedAt: attemptStartedAt,
       });
 
-      this.emit({
-        eventType: "collaboration.dag.node.started",
-        runId: initialRun.id,
-        sessionId: initialRun.sessionId,
-        turnId,
-        createdAt: attemptStartedAt,
-        payload: {
-          schemaVersion: 1,
-          nodeId: node.id,
-          participantId: node.participantId,
-          roleId: assignment.roleId,
-          attempt,
-          turnIndex,
-        },
-      });
+      let completionCommitted = false;
 
       try {
+        this.emit({
+          eventType: "collaboration.dag.node.started",
+          runId: initialRun.id,
+          sessionId: initialRun.sessionId,
+          turnId,
+          createdAt: attemptStartedAt,
+          payload: {
+            schemaVersion: 1,
+            nodeId: node.id,
+            participantId: node.participantId,
+            roleId: assignment.roleId,
+            attempt,
+            turnIndex,
+          },
+        });
         if (!initialized.has(node.participantId)) {
           if (runtime.adapter.initialize) {
             await runtime.adapter.initialize({
@@ -718,6 +719,7 @@ export class CollaborationDagController {
             outputMessageId: message.id,
           },
         });
+        completionCommitted = true;
 
         this.emit({
           eventType: "collaboration.dag.node.completed",
@@ -737,6 +739,10 @@ export class CollaborationDagController {
         });
         return message;
       } catch (error) {
+        if (completionCommitted) {
+          throw error;
+        }
+
         const cancelled = signal.aborted ||
           (error instanceof BridgeError && error.code === "collaboration_dag_cancelled");
         const retryable = !cancelled && retryableError(error);
