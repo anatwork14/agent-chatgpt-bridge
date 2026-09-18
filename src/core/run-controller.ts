@@ -2604,7 +2604,9 @@ export class RunController {
     const nowFn = options?.now ?? (() => Date.now());
     const clock = options?.clock ?? (() => new Date().toISOString());
 
-    const orphanedRuns = persistence.listRunsByStatuses(["running"]);
+    const orphanedRuns = persistence
+      .listRunsByStatuses(["running"])
+      .filter(run => !this.dagController?.isDagRun(run.id));
     let pausedAtSafeBoundary = 0;
     let syntheticTurnRecorded = 0;
     let budgetExhaustedAtRecovery = 0;
@@ -2971,6 +2973,14 @@ export class RunController {
     options?: RoleBasedResumeOptions,
   ): Promise<RoleBasedCollaborationRun> {
     const persistence = this.requireRolePersistence();
+
+    if (this.dagController?.isDagRun(runId)) {
+      throw new BridgeError(
+        "invalid_state_transition",
+        `Run '${runId}' is a P5 DAG run; use resumeDagRun() instead`,
+        false,
+      );
+    }
 
     // Step 1: Load canonical run and verify paused
     const run = persistence.getRun(runId);
