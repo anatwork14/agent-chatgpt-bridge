@@ -506,23 +506,42 @@ A `CollaborationRun` terminates exclusively in one of these five explicit termin
 
 ---
 
-## 12. Audit Events Taxonomy
+## 12. Audit Events Taxonomy & Observability (P4.7)
 
-Every lifecycle transition emits a structured audit record stored in the SQLite `audit_events` and `run_events` tables.
+Every lifecycle transition emits a structured, strongly-typed audit record stored in the SQLite `audit_events` table with `schemaVersion: 1`.
 
-| Audit Event Name | Emitted When | Critical Payload Attributes |
+### 12.1 Strict Data Minimization & Privacy Invariants
+Audit records are derivative operational logs designed for tracing, metrics, and incident diagnosis.
+To prevent credential and intellectual property leakage:
+1. **Zero Raw Content:** Audit payloads NEVER store model prompts, system instructions, user objectives, agent outputs, message content, error messages, done summaries, or cancellation reasons.
+2. **Safe Metadata Only:** Indicators are recorded as booleans (`reasonPresent`, `summaryPresent`), structural metrics (`objectiveLength`, `totalTurns`, `durationMs`), or standardized error codes (`errorCode`, `failureCategory`, `causeCode`).
+3. **Payload Bounds:** Payloads must be strictly JSON-serializable and bounded by a 16 KiB ceiling.
+4. **Idempotent Ordering Authority:** The SQLite auto-incrementing integer `id ASC` serves as the deterministic causal ordering authority. All timeline queries use `ORDER BY id ASC`.
+5. **Fail-Closed Persistence Commit:** Canonical database updates must COMMIT before derivative audit events are emitted. If audit emission fails, canonical history is preserved.
+
+### 12.2 Collaboration Audit Taxonomy
+
+| Audit Event Name | Emitted When | Critical Payload Attributes (`schemaVersion: 1`) |
 | :--- | :--- | :--- |
-| `collaboration.started` | Run initialized and validated | `runId`, `objective`, `participants`, `budget`, `policy` |
-| `participant.assigned` | Role bound to an adapter | `runId`, `participantId`, `roleId`, `adapterType` |
-| `participant.turn.started` | Participant invoked for a turn | `runId`, `turnId`, `round`, `participantId`, `roleId` |
-| `participant.turn.completed` | Participant produced valid decision | `runId`, `turnId`, `decisionType`, `durationMs` |
-| `participant.turn.failed` | Turn failed due to error/timeout | `runId`, `turnId`, `error`, `retryable` |
-| `participant.cancelled` | Individual participant cancelled | `runId`, `participantId`, `reason` |
-| `collaboration.paused` | Participant emitted `pause` decision | `runId`, `round`, `reason` |
-| `collaboration.completed` | Run concluded successfully | `runId`, `finalSummary`, `totalTurns`, `durationMs` |
-| `collaboration.failed` | Run failed fatally | `runId`, `error`, `lastActiveParticipant` |
-| `collaboration.cancelled` | Entire run aborted | `runId`, `cancelledBy`, `activeTurnsTerminated` |
-| `collaboration.budget_exhausted` | Budget limit reached | `runId`, `exhaustedDimension`, `limitValue` |
+| `collaboration.started` | Run validated and started | `roleSequence`, `terminalRoles`, `loopMode`, `maxTurns`, `maxWallClockMs`, `participantCount`, `objectiveLength` |
+| `participant.assigned` | Role bound to participant | `participantId`, `roleId`, `adapterId`, `sequenceIndex` |
+| `participant.turn.started` | Participant invoked for turn | `participantId`, `roleId`, `round`, `turnIndex`, `attemptOrdinal` |
+| `participant.turn.completed` | Participant produced valid decision | `participantId`, `roleId`, `round`, `turnIndex`, `decisionType`, `durationMs` |
+| `participant.turn.failed` | Turn failed (decision or operational) | `participantId`, `roleId`, `round`, `turnIndex`, `errorCode`, `retryable`, `durationMs` |
+| `participant.turn.cancelled` | Turn aborted due to cancellation | `participantId`, `roleId`, `round`, `turnIndex`, `cancellationScope` (`run` \| `participant` \| `workflow`) |
+| `participant.retry.scheduled` | Retry scheduled for failed participant | `participantId`, `roleId`, `retryOrdinal`, `maxRetries`, `nextTurnIndex`, `recreateRuntime` |
+| `participant.runtime.recreated` | Adapter runtime closed and recreated | `participantId`, `roleId`, `adapterId`, `causeCode` |
+| `collaboration.paused` | Run paused by participant decision | `round`, `turnIndex`, `participantId`, `roleId`, `reasonPresent` |
+| `collaboration.cancel.requested` | Entire collaboration cancel initiated | `activeParticipantId`, `reasonPresent` |
+| `participant.cancel.requested` | Single participant cancel initiated | `participantId`, `roleId`, `wasActive`, `reasonPresent` |
+| `collaboration.recovered` | Daemon startup recovery completed | `recoveryKind` (`safe_boundary` \| `interrupted_turn`), `outcomeStatus`, `participantId`, `turnIndex`, `syntheticTurn` |
+| `collaboration.replay.acknowledged` | Interrupted turn replay acknowledged | `participantId`, `roleId`, `interruptedTurnIndex` |
+| `collaboration.resumed` | Paused run resumed | `round`, `sequenceIndex`, `nextTurnIndex`, `participantId`, `roleId`, `replayAcknowledged` |
+| `collaboration.completed` | Workflow finished successfully | `round`, `totalTurns` |
+| `collaboration.failed` | Run failed fatally or retry exhausted | `round`, `totalTurns`, `errorCode`, `failureCategory`, `participantId`, `roleId` |
+| `collaboration.cancelled` | Run cancelled by operator or signal | `round`, `totalTurns` |
+| `collaboration.timed_out` | Wall-clock deadline exceeded | `totalTurns`, `maxWallClockMs` |
+| `collaboration.budget_exhausted` | Turn budget exceeded | `totalTurns`, `maxTurns` |
 
 ---
 
@@ -895,13 +914,13 @@ The P4 implementation suite will enforce the following deterministic test cases:
 - [x] Error escalation and retry budgets
 
 ### P4.6 — Persistence / Resume
-- [ ] Run recovery on daemon startup
-- [ ] Idempotent run resumption
-- [ ] Interrupted turn reconciliation
+- [x] Run recovery on daemon startup
+- [x] Idempotent run resumption
+- [x] Interrupted turn reconciliation
 
 ### P4.7 — Audit / Observability
-- [ ] Structured multi-participant audit event logging
-- [ ] Audit event sequence tests
+- [x] Structured multi-participant audit event logging
+- [x] Audit event sequence tests
 
 ### P4.8 — Claude + Antigravity Live Collaboration
 - [ ] Live ACP multi-agent smoke test

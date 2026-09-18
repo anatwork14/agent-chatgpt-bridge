@@ -52,6 +52,12 @@ import {
   assertCollaborationMessageIntegrity,
 } from "./collaboration-transcript";
 import type { PersistedParticipantRestorer } from "../agents/participant-factory";
+import {
+  emitCollaborationAuditEvent,
+  type CollaborationAuditEventType,
+  type CollaborationAuditPayloadMap,
+} from "./collaboration-audit";
+
 
 
 const HARD_MAX_ROUNDS = 100;
@@ -98,6 +104,119 @@ export class RunController {
   private readonly roleRunSettlements = new Map<string, Promise<RoleBasedExecutionResult>>();
   /** Prevents concurrent double-resume attempts for the same runId. */
   private readonly resumingRoleRuns = new Set<string>();
+  /** Tracks terminal audit emissions to guarantee exactly one terminal event per run. */
+  private readonly settledTerminalAudits = new Set<string>();
+
+  private emitRoleAudit<T extends CollaborationAuditEventType>(params: {
+    eventType: T;
+    runId: string;
+    sessionId: string;
+    turnId?: string;
+    createdAt?: string;
+    payload: CollaborationAuditPayloadMap[T];
+  }): void {
+    emitCollaborationAuditEvent(this.auditStore, params);
+  }
+
+  private emitTerminalAudit(
+    run: RoleBasedCollaborationRun,
+    turnsCount: number,
+    context?: {
+      round?: number;
+      errorCode?: string;
+      failureCategory?: string;
+      participantId?: string;
+      roleId?: string;
+      createdAt?: string;
+    },
+  ): void {
+    if (this.settledTerminalAudits.has(run.id)) {
+      return;
+    }
+    const createdAt = context?.createdAt || run.completedAt || new Date().toISOString();
+    const round = context?.round ?? run.round;
+
+    switch (run.status) {
+      case "completed":
+        this.settledTerminalAudits.add(run.id);
+        this.emitRoleAudit({
+          eventType: "collaboration.completed",
+          runId: run.id,
+          sessionId: run.sessionId,
+          createdAt,
+          payload: {
+            schemaVersion: 1,
+            round,
+            totalTurns: turnsCount,
+          },
+        });
+        break;
+
+      case "failed":
+        this.settledTerminalAudits.add(run.id);
+        this.emitRoleAudit({
+          eventType: "collaboration.failed",
+          runId: run.id,
+          sessionId: run.sessionId,
+          createdAt,
+          payload: {
+            schemaVersion: 1,
+            round,
+            totalTurns: turnsCount,
+            errorCode: context?.errorCode,
+            failureCategory: context?.failureCategory,
+            participantId: context?.participantId,
+            roleId: context?.roleId,
+          },
+        });
+        break;
+
+      case "cancelled":
+        this.settledTerminalAudits.add(run.id);
+        this.emitRoleAudit({
+          eventType: "collaboration.cancelled",
+          runId: run.id,
+          sessionId: run.sessionId,
+          createdAt,
+          payload: {
+            schemaVersion: 1,
+            round,
+            totalTurns: turnsCount,
+          },
+        });
+        break;
+
+      case "timed_out":
+        this.settledTerminalAudits.add(run.id);
+        this.emitRoleAudit({
+          eventType: "collaboration.timed_out",
+          runId: run.id,
+          sessionId: run.sessionId,
+          createdAt,
+          payload: {
+            schemaVersion: 1,
+            totalTurns: turnsCount,
+            maxWallClockMs: run.budget.maxWallClockMs,
+          },
+        });
+        break;
+
+      case "budget_exhausted":
+        this.settledTerminalAudits.add(run.id);
+        this.emitRoleAudit({
+          eventType: "collaboration.budget_exhausted",
+          runId: run.id,
+          sessionId: run.sessionId,
+          createdAt,
+          payload: {
+            schemaVersion: 1,
+            totalTurns: turnsCount,
+            maxTurns: run.budget.maxTurns,
+          },
+        });
+        break;
+    }
+  }
 
   constructor(
     private readonly runStore: RunStore,
@@ -111,6 +230,7 @@ export class RunController {
     private readonly rolePersistence?: RoleBasedRunPersistence,
     private readonly restoreParticipants?: PersistedParticipantRestorer,
   ) {}
+
 
 
   async startRun(
@@ -599,6 +719,46 @@ export class RunController {
       );
     }
 
+    this.emitRoleAudit({
+      eventType: "collaboration.started",
+      runId: initialRun.id,
+      sessionId: initialRun.sessionId,
+      createdAt: initialRun.startedAt ?? nowIso,
+      payload: {
+        schemaVersion: 1,
+        participantCount: initialRun.participantIds.length,
+        roleSequence: initialRun.policy.roleSequence,
+        loopMode: initialRun.policy.loopMode,
+        budget: {
+          maxTurns: initialRun.budget.maxTurns,
+          maxParticipants: initialRun.budget.maxParticipants,
+          maxParallelTurns: 1,
+          maxRetriesPerParticipant: initialRun.budget.maxRetriesPerParticipant,
+          maxWallClockMs: initialRun.budget.maxWallClockMs,
+        },
+      },
+    });
+
+    for (let seqIdx = 0; seqIdx < initialRun.policy.roleSequence.length; seqIdx++) {
+      const roleId = initialRun.policy.roleSequence[seqIdx]!;
+      const plan = prepared.plans.find((p) => p.roleId === roleId);
+      if (plan) {
+        this.emitRoleAudit({
+          eventType: "participant.assigned",
+          runId: initialRun.id,
+          sessionId: initialRun.sessionId,
+          createdAt: initialRun.createdAt,
+          payload: {
+            schemaVersion: 1,
+            participantId: plan.participantId,
+            roleId: plan.roleId,
+            adapterId: plan.adapterId,
+            sequenceIndex: seqIdx,
+          },
+        });
+      }
+    }
+
     const rootAbortController = new AbortController();
     const onSignalAbort = () => {
       if (options?.signal) {
@@ -662,6 +822,12 @@ export class RunController {
           throw new BridgeError("not_found", `Role-based run '${runId}' not found`, false);
         }
         const canonicalTurns = persistence.getTurns(runId);
+        this.emitTerminalAudit(canonicalRun, canonicalTurns.length, {
+          round: canonicalRun.round,
+          createdAt: completedAt,
+          errorCode: error instanceof BridgeError ? error.code : undefined,
+        });
+
         const result: RoleBasedExecutionResult = {
           run: canonicalRun,
           turns: canonicalTurns,
@@ -743,6 +909,18 @@ export class RunController {
     }
 
     const control = this.activeRoleRuns.get(runId);
+    this.emitRoleAudit({
+      eventType: "collaboration.cancel.requested",
+      runId,
+      sessionId: currentBefore.sessionId,
+      createdAt: new Date().toISOString(),
+      payload: {
+        schemaVersion: 1,
+        activeParticipantId: control?.activeParticipantId ?? currentBefore.activeParticipantId,
+        reasonPresent: Boolean(reason && reason.trim().length > 0),
+      },
+    });
+
     if (control) {
       const abortError = new RoleRunAbortError({
         kind: "run_cancelled",
@@ -781,6 +959,13 @@ export class RunController {
       );
     }
     const finalRun = persistence.getRun(runId);
+    if (finalRun && finalRun.status === "cancelled") {
+      const turns = persistence.getTurns(runId);
+      this.emitTerminalAudit(finalRun, turns.length, {
+        round: finalRun.round,
+        createdAt: finalRun.completedAt ?? new Date().toISOString(),
+      });
+    }
     return finalRun?.status === "cancelled";
   }
 
@@ -828,6 +1013,20 @@ export class RunController {
     control.cancelledParticipantReasons.set(participantId, normalizedReason);
 
     const nowIso = new Date().toISOString();
+    this.emitRoleAudit({
+      eventType: "participant.cancel.requested",
+      runId,
+      sessionId: run.sessionId,
+      createdAt: nowIso,
+      payload: {
+        schemaVersion: 1,
+        participantId,
+        roleId: run.participantsById[participantId]?.roleId,
+        wasActive: control.activeParticipantId === participantId,
+        reasonPresent: Boolean(reason && reason.trim().length > 0),
+      },
+    });
+
     const abortError = new RoleRunAbortError({
       kind: "participant_cancelled",
       participantId,
@@ -875,6 +1074,17 @@ export class RunController {
               completedAt: nowIso,
             },
           });
+          const updatedRun = control.persistence.getRun(runId);
+          if (updatedRun && isRoleBasedRunTerminalStatus(updatedRun.status)) {
+            const turns = control.persistence.getTurns(runId);
+            this.emitTerminalAudit(updatedRun, turns.length, {
+              round: updatedRun.round,
+              failureCategory: "participant_cancelled",
+              participantId,
+              roleId: run.participantsById[participantId]?.roleId,
+              createdAt: nowIso,
+            });
+          }
         } catch (persistErr) {
           persistenceError = persistErr;
         }
@@ -1066,6 +1276,9 @@ export class RunController {
               break loop;
             }
 
+            // Generate turnId for the upcoming turn attempt so turn.started correlation matches committed turn
+            const turnId = turnIdFactory();
+
             // Mark participant active and persist activeParticipantId
             const activeParticipant: ParticipantRecord = {
               ...participantsById[runtime.participantId]!,
@@ -1091,6 +1304,23 @@ export class RunController {
             participantsById[runtime.participantId] = activeParticipant;
             control.activeParticipantId = runtime.participantId;
 
+            this.emitRoleAudit({
+              eventType: "participant.turn.started",
+              runId,
+              sessionId,
+              turnId,
+              createdAt: activeParticipant.lastActiveAt,
+              payload: {
+                schemaVersion: 1,
+                participantId: runtime.participantId,
+                roleId: runtime.roleId,
+                adapterId: plan.adapterId,
+                round,
+                turnIndex,
+                attemptOrdinal: attemptInRole + 1,
+              },
+            });
+
             // Lazy adapter initialization
             if (!initializedParticipants.has(runtime.participantId)) {
               try {
@@ -1101,7 +1331,6 @@ export class RunController {
                 });
                 initializedParticipants.add(runtime.participantId);
               } catch (initErr) {
-                const turnId = turnIdFactory();
                 const turnTime = clock();
                 const isRetryable = retryableError(initErr);
                 const canRetry =
@@ -1168,17 +1397,72 @@ export class RunController {
                 turnIndex += 1;
                 control.activeParticipantId = undefined;
 
+                this.emitRoleAudit({
+                  eventType: "participant.turn.failed",
+                  runId,
+                  sessionId,
+                  turnId,
+                  createdAt: turnTime,
+                  payload: {
+                    schemaVersion: 1,
+                    participantId: runtime.participantId,
+                    roleId: runtime.roleId,
+                    round,
+                    turnIndex: failedTurn.turnIndex,
+                    errorCode: failedTurn.error?.code ?? "agent_adapter_failed",
+                    retryable: isRetryable,
+                    durationMs: 0,
+                  },
+                });
+
                 if (canRetry) {
                   attemptInRole += 1;
+                  this.emitRoleAudit({
+                    eventType: "participant.retry.scheduled",
+                    runId,
+                    sessionId,
+                    turnId,
+                    createdAt: turnTime,
+                    payload: {
+                      schemaVersion: 1,
+                      participantId: runtime.participantId,
+                      roleId: runtime.roleId,
+                      retryOrdinal: attemptInRole,
+                      maxRetries,
+                      nextTurnIndex: turnIndex,
+                      recreateRuntime: Boolean(runtime.recreateAdapter),
+                    },
+                  });
                   await runtime.adapter.close?.().catch(() => undefined);
                   if (runtime.recreateAdapter) {
                     runtime.adapter = runtime.recreateAdapter();
+                    this.emitRoleAudit({
+                      eventType: "participant.runtime.recreated",
+                      runId,
+                      sessionId,
+                      createdAt: clock(),
+                      payload: {
+                        schemaVersion: 1,
+                        participantId: runtime.participantId,
+                        roleId: runtime.roleId,
+                        adapterId: plan.adapterId,
+                        causeCode: failedTurn.error?.code ?? "agent_adapter_failed",
+                      },
+                    });
                   }
                   continue roleAttemptLoop;
                 }
 
                 runStatus = "failed";
                 finalSummary = initErr instanceof Error ? initErr.message : String(initErr);
+                this.emitTerminalAudit(persistence.getRun(runId)!, turnIndex, {
+                  round,
+                  failureCategory: "initialization_failed",
+                  participantId: runtime.participantId,
+                  roleId: runtime.roleId,
+                  errorCode: failedTurn.error?.code ?? "agent_adapter_failed",
+                  createdAt: turnTime,
+                });
                 break loop;
               }
             }
@@ -1201,7 +1485,6 @@ export class RunController {
               },
             };
 
-            const turnId = turnIdFactory();
             const turnStartedAt = clock();
             const turnStartMs = nowFn();
             const remainingMs = budget.maxWallClockMs - (turnStartMs - startTimestamp);
@@ -1297,6 +1580,29 @@ export class RunController {
                 turnHistory.push(turnId);
                 participantsById[runtime.participantId] = updatedPart;
                 turnIndex += 1;
+
+                this.emitRoleAudit({
+                  eventType: "participant.turn.cancelled",
+                  runId,
+                  sessionId,
+                  turnId,
+                  createdAt: turnCompletedAt,
+                  payload: {
+                    schemaVersion: 1,
+                    participantId: runtime.participantId,
+                    roleId: runtime.roleId,
+                    round,
+                    turnIndex: cancelledTurn.turnIndex,
+                    cancellationScope: "participant",
+                  },
+                });
+                this.emitTerminalAudit(persistence.getRun(runId)!, turnIndex, {
+                  round,
+                  failureCategory: "participant_cancelled",
+                  participantId: runtime.participantId,
+                  roleId: runtime.roleId,
+                  createdAt: turnCompletedAt,
+                });
                 break loop;
               }
 
@@ -1329,6 +1635,10 @@ export class RunController {
                   ? `Required participant '${otherId}' was cancelled: ${partReason}`
                   : `Required role participant '${[...control.cancelledParticipantIds].join(", ")}' was cancelled; required workflow failed`;
 
+                const existingRun = persistence.getRun(runId);
+                const terminalCompletedAt = existingRun?.completedAt ?? turnCompletedAt;
+                const terminalSummary = existingRun?.finalSummary ?? finalSummary;
+
                 try {
                   persistence.recordTurnTransaction({
                     turn: cancelledTurn,
@@ -1337,8 +1647,8 @@ export class RunController {
                       id: runId,
                       status: "failed",
                       activeParticipantId: null,
-                      finalSummary,
-                      completedAt: turnCompletedAt,
+                      finalSummary: terminalSummary,
+                      completedAt: terminalCompletedAt,
                     },
                   });
                 } catch (persistErr) {
@@ -1353,6 +1663,29 @@ export class RunController {
                 turnHistory.push(turnId);
                 participantsById[runtime.participantId] = updatedPart;
                 turnIndex += 1;
+
+                this.emitRoleAudit({
+                  eventType: "participant.turn.cancelled",
+                  runId,
+                  sessionId,
+                  turnId,
+                  createdAt: turnCompletedAt,
+                  payload: {
+                    schemaVersion: 1,
+                    participantId: runtime.participantId,
+                    roleId: runtime.roleId,
+                    round,
+                    turnIndex: cancelledTurn.turnIndex,
+                    cancellationScope: "participant",
+                  },
+                });
+                this.emitTerminalAudit(persistence.getRun(runId)!, turnIndex, {
+                  round,
+                  failureCategory: "participant_cancelled",
+                  participantId: runtime.participantId,
+                  roleId: runtime.roleId,
+                  createdAt: turnCompletedAt,
+                });
                 break loop;
               }
 
@@ -1406,6 +1739,26 @@ export class RunController {
                 turnHistory.push(turnId);
                 participantsById[runtime.participantId] = cancelledPart;
                 turnIndex += 1;
+
+                this.emitRoleAudit({
+                  eventType: "participant.turn.cancelled",
+                  runId,
+                  sessionId,
+                  turnId,
+                  createdAt: turnCompletedAt,
+                  payload: {
+                    schemaVersion: 1,
+                    participantId: runtime.participantId,
+                    roleId: runtime.roleId,
+                    round,
+                    turnIndex: cancelledTurn.turnIndex,
+                    cancellationScope: "run",
+                  },
+                });
+                this.emitTerminalAudit(persistence.getRun(runId)!, turnIndex, {
+                  round,
+                  createdAt: turnCompletedAt,
+                });
                 break loop;
               }
 
@@ -1463,6 +1816,28 @@ export class RunController {
                 turnHistory.push(turnId);
                 participantsById[runtime.participantId] = failedPart;
                 turnIndex += 1;
+
+                this.emitRoleAudit({
+                  eventType: "participant.turn.failed",
+                  runId,
+                  sessionId,
+                  turnId,
+                  createdAt: turnCompletedAt,
+                  payload: {
+                    schemaVersion: 1,
+                    participantId: runtime.participantId,
+                    roleId: runtime.roleId,
+                    round,
+                    turnIndex: timeoutTurn.turnIndex,
+                    errorCode: "agent_adapter_timeout",
+                    retryable: false,
+                    durationMs,
+                  },
+                });
+                this.emitTerminalAudit(persistence.getRun(runId)!, turnIndex, {
+                  round,
+                  createdAt: turnCompletedAt,
+                });
                 break loop;
               }
 
@@ -1543,11 +1918,58 @@ export class RunController {
               participantsById[runtime.participantId] = failedPart;
               turnIndex += 1;
 
+              this.emitRoleAudit({
+                eventType: "participant.turn.failed",
+                runId,
+                sessionId,
+                turnId,
+                createdAt: turnCompletedAt,
+                payload: {
+                  schemaVersion: 1,
+                  participantId: runtime.participantId,
+                  roleId: runtime.roleId,
+                  round,
+                  turnIndex: failedTurn.turnIndex,
+                  errorCode: failedTurn.error?.code ?? "agent_adapter_failed",
+                  retryable: isRetryable,
+                  durationMs,
+                },
+              });
+
               if (canRetry) {
                 attemptInRole += 1;
+                this.emitRoleAudit({
+                  eventType: "participant.retry.scheduled",
+                  runId,
+                  sessionId,
+                  turnId,
+                  createdAt: turnCompletedAt,
+                  payload: {
+                    schemaVersion: 1,
+                    participantId: runtime.participantId,
+                    roleId: runtime.roleId,
+                    retryOrdinal: attemptInRole,
+                    maxRetries,
+                    nextTurnIndex: turnIndex,
+                    recreateRuntime: Boolean(runtime.recreateAdapter),
+                  },
+                });
                 await runtime.adapter.close?.().catch(() => undefined);
                 if (runtime.recreateAdapter) {
                   runtime.adapter = runtime.recreateAdapter();
+                  this.emitRoleAudit({
+                    eventType: "participant.runtime.recreated",
+                    runId,
+                    sessionId,
+                    createdAt: clock(),
+                    payload: {
+                      schemaVersion: 1,
+                      participantId: runtime.participantId,
+                      roleId: runtime.roleId,
+                      adapterId: plan.adapterId,
+                      causeCode: failedTurn.error?.code ?? "agent_adapter_failed",
+                    },
+                  });
                 }
                 initializedParticipants.delete(runtime.participantId);
                 continue roleAttemptLoop;
@@ -1555,6 +1977,14 @@ export class RunController {
 
               runStatus = runStatusUpdate;
               finalSummary = runSummaryUpdate ?? undefined;
+              this.emitTerminalAudit(persistence.getRun(runId)!, turnIndex, {
+                round,
+                failureCategory: attemptInRole >= maxRetries ? "retry_exhausted" : undefined,
+                participantId: runtime.participantId,
+                roleId: runtime.roleId,
+                errorCode: failedTurn.error?.code,
+                createdAt: turnCompletedAt,
+              });
               break loop;
             } finally {
               control.rootAbortController.signal.removeEventListener("abort", onRootAbort);
@@ -1672,13 +2102,55 @@ export class RunController {
 
               priorTurns = collaborationMessagesToPriorTurns(persistence.getTranscript(runId));
 
+              this.emitRoleAudit({
+                eventType: "participant.turn.failed",
+                runId,
+                sessionId,
+                turnId,
+                createdAt: turnCompletedAt,
+                payload: {
+                  schemaVersion: 1,
+                  participantId: runtime.participantId,
+                  roleId: runtime.roleId,
+                  round,
+                  turnIndex: failedTurn.turnIndex,
+                  errorCode: "agent_decision_error",
+                  retryable: decision.retryable,
+                  durationMs,
+                },
+              });
+
               if (canRetry) {
                 attemptInRole += 1;
+                this.emitRoleAudit({
+                  eventType: "participant.retry.scheduled",
+                  runId,
+                  sessionId,
+                  turnId,
+                  createdAt: turnCompletedAt,
+                  payload: {
+                    schemaVersion: 1,
+                    participantId: runtime.participantId,
+                    roleId: runtime.roleId,
+                    retryOrdinal: attemptInRole,
+                    maxRetries,
+                    nextTurnIndex: turnIndex,
+                    recreateRuntime: false,
+                  },
+                });
                 continue roleAttemptLoop;
               }
 
               runStatus = runStatusUpdate;
               finalSummary = runSummaryUpdate ?? undefined;
+              this.emitTerminalAudit(persistence.getRun(runId)!, turnIndex, {
+                round,
+                failureCategory: attemptInRole >= maxRetries ? "retry_exhausted" : undefined,
+                participantId: runtime.participantId,
+                roleId: runtime.roleId,
+                errorCode: "agent_decision_error",
+                createdAt: turnCompletedAt,
+              });
               break loop;
             }
 
@@ -1789,17 +2261,53 @@ export class RunController {
             participantsById[runtime.participantId] = participantUpdate;
             control.activeParticipantId = undefined;
 
+            this.emitRoleAudit({
+              eventType: "participant.turn.completed",
+              runId,
+              sessionId,
+              turnId,
+              createdAt: turnCompletedAt,
+              payload: {
+                schemaVersion: 1,
+                participantId: runtime.participantId,
+                roleId: runtime.roleId,
+                round,
+                turnIndex: turnRecord.turnIndex,
+                decisionType: decision.type,
+                durationMs,
+              },
+            });
+
             if (decision.type === "message") {
               // Message turn completed and priorTurns updated
             } else if (decision.type === "done") {
               if (isTerminalRole) {
                 runStatus = "completed";
                 finalSummary = decision.summary;
+                this.emitTerminalAudit(persistence.getRun(runId)!, turnIndex, {
+                  round,
+                  createdAt: turnCompletedAt,
+                });
                 break loop;
               }
             } else if (decision.type === "pause") {
               runStatus = "paused";
               finalSummary = decision.reason;
+              this.emitRoleAudit({
+                eventType: "collaboration.paused",
+                runId,
+                sessionId,
+                turnId,
+                createdAt: turnCompletedAt,
+                payload: {
+                  schemaVersion: 1,
+                  round,
+                  turnIndex: turnRecord.turnIndex,
+                  participantId: runtime.participantId,
+                  roleId: runtime.roleId,
+                  reasonPresent: Boolean(decision.reason && decision.reason.trim().length > 0),
+                },
+              });
               break loop;
             }
 
@@ -1880,6 +2388,14 @@ export class RunController {
     persistence: RoleBasedRunPersistence,
     runId: string,
     updates: RoleBasedRunPatch,
+    auditContext?: {
+      turnCount?: number;
+      errorCode?: string;
+      failureCategory?: string;
+      participantId?: string;
+      roleId?: string;
+      createdAt?: string;
+    },
   ): RoleBasedCollaborationRun {
     const existing = persistence.getRun(runId);
     if (!existing) {
@@ -1896,6 +2412,20 @@ export class RunController {
     if (!finalRun) {
       throw new BridgeError("not_found", `Role-based run '${runId}' not found after finalization`, false);
     }
+
+    if (isRoleBasedRunTerminalStatus(finalRun.status)) {
+      const turns = persistence.getTurns(runId);
+      const turnsCount = auditContext?.turnCount ?? turns.length;
+      this.emitTerminalAudit(finalRun, turnsCount, {
+        round: updates.round ?? finalRun.round,
+        errorCode: auditContext?.errorCode,
+        failureCategory: auditContext?.failureCategory,
+        participantId: auditContext?.participantId,
+        roleId: auditContext?.roleId,
+        createdAt: updates.completedAt ?? auditContext?.createdAt ?? finalRun.completedAt ?? undefined,
+      });
+    }
+
     return finalRun;
   }
 
@@ -2023,6 +2553,22 @@ export class RunController {
           completedAt: nowIso,
           finalSummary: `Exceeded maximum wall-clock deadline (${run.budget.maxWallClockMs} ms)`,
         });
+        const existingTurns = persistence.getTurns(run.id);
+        this.emitRoleAudit({
+          eventType: "collaboration.recovered",
+          runId: run.id,
+          sessionId: run.sessionId,
+          createdAt: nowIso,
+          payload: {
+            schemaVersion: 1,
+            recoveryKind: "safe_boundary",
+            outcomeStatus: "timed_out",
+            syntheticTurn: false,
+          },
+        });
+        this.emitTerminalAudit(persistence.getRun(run.id)!, existingTurns.length, {
+          createdAt: nowIso,
+        });
         callbacks.onBudgetExhaustedAtRecovery();
         return;
       }
@@ -2035,6 +2581,21 @@ export class RunController {
           completedAt: nowIso,
           finalSummary: `Exceeded maximum allowed turns (${run.budget.maxTurns})`,
         });
+        this.emitRoleAudit({
+          eventType: "collaboration.recovered",
+          runId: run.id,
+          sessionId: run.sessionId,
+          createdAt: nowIso,
+          payload: {
+            schemaVersion: 1,
+            recoveryKind: "safe_boundary",
+            outcomeStatus: "budget_exhausted",
+            syntheticTurn: false,
+          },
+        });
+        this.emitTerminalAudit(persistence.getRun(run.id)!, existingTurns.length, {
+          createdAt: nowIso,
+        });
         callbacks.onBudgetExhaustedAtRecovery();
         return;
       }
@@ -2043,6 +2604,30 @@ export class RunController {
         status: "paused",
         activeParticipantId: null,
         finalSummary: null,
+      });
+      this.emitRoleAudit({
+        eventType: "collaboration.recovered",
+        runId: run.id,
+        sessionId: run.sessionId,
+        createdAt: nowIso,
+        payload: {
+          schemaVersion: 1,
+          recoveryKind: "safe_boundary",
+          outcomeStatus: "paused",
+          syntheticTurn: false,
+        },
+      });
+      this.emitRoleAudit({
+        eventType: "collaboration.paused",
+        runId: run.id,
+        sessionId: run.sessionId,
+        createdAt: nowIso,
+        payload: {
+          schemaVersion: 1,
+          round: run.round,
+          turnIndex: existingTurns.length,
+          reasonPresent: false,
+        },
       });
       callbacks.onPausedAtSafeBoundary();
       return;
@@ -2156,6 +2741,66 @@ export class RunController {
       },
     });
 
+    this.emitRoleAudit({
+      eventType: "participant.turn.failed",
+      runId: run.id,
+      sessionId: run.sessionId,
+      turnId: syntheticTurnId,
+      createdAt: turnCompletedAt,
+      payload: {
+        schemaVersion: 1,
+        participantId: activeParticipantId,
+        roleId: activeParticipant.roleId,
+        round: run.round,
+        turnIndex: syntheticTurnIndex,
+        errorCode: "daemon_restarted",
+        retryable: true,
+      },
+    });
+
+    this.emitRoleAudit({
+      eventType: "collaboration.recovered",
+      runId: run.id,
+      sessionId: run.sessionId,
+      turnId: syntheticTurnId,
+      createdAt: turnCompletedAt,
+      payload: {
+        schemaVersion: 1,
+        recoveryKind: "interrupted_turn",
+        outcomeStatus: finalStatus,
+        participantId: activeParticipantId,
+        turnIndex: syntheticTurnIndex,
+        syntheticTurn: true,
+      },
+    });
+
+    if (finalStatus === "paused") {
+      this.emitRoleAudit({
+        eventType: "collaboration.paused",
+        runId: run.id,
+        sessionId: run.sessionId,
+        turnId: syntheticTurnId,
+        createdAt: turnCompletedAt,
+        payload: {
+          schemaVersion: 1,
+          round: run.round,
+          turnIndex: syntheticTurnIndex,
+          participantId: activeParticipantId,
+          roleId: activeParticipant.roleId,
+          reasonPresent: true,
+        },
+      });
+    } else {
+      this.emitTerminalAudit(persistence.getRun(run.id)!, turnsAfterSynthetic, {
+        round: run.round,
+        errorCode: finalStatus === "failed" ? "retry_exhausted" : undefined,
+        failureCategory: finalStatus === "failed" ? "retry_exhausted" : undefined,
+        participantId: activeParticipantId,
+        roleId: activeParticipant.roleId,
+        createdAt: turnCompletedAt,
+      });
+    }
+
     callbacks.onSyntheticTurnRecorded();
   }
 
@@ -2258,6 +2903,10 @@ export class RunController {
       if (!finalRun) {
         throw new BridgeError("not_found", `Role-based run '${run.id}' not found after completion finalization`, false);
       }
+      this.emitTerminalAudit(finalRun, turns.length, {
+        round: run.round,
+        createdAt: finalRun.completedAt ?? undefined,
+      });
       return finalRun;
     }
 
@@ -2276,11 +2925,17 @@ export class RunController {
     const originMs = requireValidStartedAt(run, nowMs);
     const wallClockElapsed = nowMs - originMs;
     if (wallClockElapsed >= run.budget.maxWallClockMs) {
+      const completedAt = clock();
       persistence.finalizeRun(run.id, {
         status: "timed_out",
         activeParticipantId: null,
-        completedAt: clock(),
+        completedAt,
         finalSummary: `Exceeded maximum wall-clock deadline (${run.budget.maxWallClockMs} ms)`,
+      });
+      const finalRun = persistence.getRun(run.id)!;
+      this.emitTerminalAudit(finalRun, turns.length, {
+        round: run.round,
+        createdAt: completedAt,
       });
       throw new BridgeError(
         "timed_out",
@@ -2291,11 +2946,17 @@ export class RunController {
 
     // Step 7: Check maxTurns budget (Item 33, 35, 36)
     if (cursor.nextTurnIndex >= run.budget.maxTurns) {
+      const completedAt = clock();
       persistence.finalizeRun(run.id, {
         status: "budget_exhausted",
         activeParticipantId: null,
-        completedAt: clock(),
+        completedAt,
         finalSummary: `Exceeded maximum allowed turns (${run.budget.maxTurns})`,
+      });
+      const finalRun = persistence.getRun(run.id)!;
+      this.emitTerminalAudit(finalRun, turns.length, {
+        round: run.round,
+        createdAt: completedAt,
       });
       throw new BridgeError(
         "budget_exhausted",
@@ -2332,6 +2993,48 @@ export class RunController {
     if (!resumedRun) {
       throw new BridgeError("not_found", `Role-based run '${run.id}' not found after resume transition`, false);
     }
+
+    const nextRoleId = run.policy.roleSequence[cursor.sequenceIndex];
+    const nextParticipantId = run.participantIds[cursor.sequenceIndex];
+    const replayAcknowledged = Boolean(cursor.interruptedTurnReplayRequired && options?.allowReplayInterruptedTurn === true);
+
+    if (replayAcknowledged) {
+      const interruptedTurn = turns.length > 0 ? turns[turns.length - 1] : undefined;
+      const interruptedParticipantId = cursor.interruptedParticipantId ?? nextParticipantId;
+      const interruptedRoleId = (interruptedTurn && interruptedTurn.participantId === interruptedParticipantId)
+        ? interruptedTurn.roleId
+        : nextRoleId;
+      const interruptedTurnIndex = interruptedTurn ? interruptedTurn.turnIndex : (cursor.nextTurnIndex - 1);
+
+      this.emitRoleAudit({
+        eventType: "collaboration.replay.acknowledged",
+        runId: run.id,
+        sessionId: run.sessionId,
+        createdAt: clock(),
+        payload: {
+          schemaVersion: 1,
+          participantId: interruptedParticipantId,
+          roleId: interruptedRoleId,
+          interruptedTurnIndex,
+        },
+      });
+    }
+
+    this.emitRoleAudit({
+      eventType: "collaboration.resumed",
+      runId: run.id,
+      sessionId: run.sessionId,
+      createdAt: clock(),
+      payload: {
+        schemaVersion: 1,
+        round: cursor.round,
+        sequenceIndex: cursor.sequenceIndex,
+        nextTurnIndex: cursor.nextTurnIndex,
+        participantId: nextParticipantId,
+        roleId: nextRoleId,
+        replayAcknowledged,
+      },
+    });
 
     // Step 11: Register ActiveRoleRunControl
     const rootAbortController = new AbortController();
@@ -2415,6 +3118,11 @@ export class RunController {
           throw new BridgeError("not_found", `Role-based run '${run.id}' not found`, false);
         }
         const canonicalTurns = persistence.getTurns(run.id);
+        this.emitTerminalAudit(canonicalRun, canonicalTurns.length, {
+          round: canonicalRun.round,
+          errorCode: finalStatus === "failed" ? (error instanceof BridgeError ? error.code : "runtime_error") : undefined,
+          createdAt: completedAt,
+        });
         return { run: canonicalRun, turns: canonicalTurns };
       })
       .finally(() => {
