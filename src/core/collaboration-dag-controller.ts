@@ -349,9 +349,10 @@ export class CollaborationDagController {
     return true;
   }
 
-  async cancelAllRuns(reason = "Bridge shutting down"): Promise<void> {
+  async cancelAllRuns(reason = "Bridge shutting down"): Promise<number> {
     const ids = [...this.activeRuns.keys()];
-    await Promise.all(ids.map(id => this.cancelRun(id, reason)));
+    const results = await Promise.all(ids.map(id => this.cancelRun(id, reason)));
+    return results.filter(Boolean).length;
   }
 
   async waitForIdle(): Promise<void> {
