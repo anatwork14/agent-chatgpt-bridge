@@ -618,15 +618,36 @@ CREATE INDEX idx_collaboration_messages_turn ON collaboration_messages(turn_id);
 - **Sanitized Config Snapshots:** `config_snapshot_json` defensively strips any credentials, tokens, or passwords, retaining only execution parameters (`adapterType`, `command`, `cwd`, profile, permissionMode).
 
 ### 13.3 Safe Resumption Protocol
-If the bridge daemon restarts or crashes while a run is in status `running`:
-1. Upon startup, `RunController.recoverRuns()` queries runs where `status = 'running'`.
-2. Because child processes do not survive daemon restarts, active turns are settled as `failed` (code: `daemon_restarted`).
-3. The run status transitions to `paused` with `finalSummary: "Suspended due to daemon restart"`.
-4. A caller can issue `POST /runs/{id}/resume`. The controller:
-   - Validates that `budget.maxWallClockMs` and `budget.maxTurns` have remaining headroom.
-   - Re-instantiates participant adapters.
-   - Re-reads canonical history from SQLite.
-   - Dispatches the next turn according to `policy.roleSequence`.
+If the bridge daemon restarts or crashes while a role-based run is in status `running`:
+
+1. **Startup Discovery & Reconciliation:**
+   - Upon daemon boot, before accepting new traffic, `RunController.recoverRoleBasedRuns()` queries SQLite for all runs where `status = 'running'`.
+   - Recovery is strictly non-spawning: zero external adapter processes, zero network calls, zero token consumption.
+   - Recovery is fail-closed: if any orphaned run fails reconciliation, daemon startup aborts and cleans up SQLite and runtime state.
+   - There is **no automatic resume** on daemon startup.
+
+2. **Interruption Case A: Safe Turn Boundary (`activeParticipantId == null`):**
+   - If the crash occurred between turns, the run is evaluated against remaining budgets:
+     - If wall-clock elapsed (`now - run.startedAt`) exceeds `budget.maxWallClockMs`, the run transitions to `timed_out`.
+     - If canonical turn count already reached `budget.maxTurns`, the run transitions to `budget_exhausted`.
+     - Otherwise, the run transitions to `paused` with `activeParticipantId = null`. No synthetic turn is recorded.
+
+3. **Interruption Case B: Active Turn Crash (`activeParticipantId != null`):**
+   - Because child processes and ephemeral network sessions do not survive daemon crashes, the active turn was abruptly interrupted.
+   - A synthetic turn is recorded with `status = 'failed'`, error code `daemon_restarted`, and retryable flag `true`.
+   - The synthetic `daemon_restarted` turn consumes a turn slot (`turnsBeforeSynthetic + 1`), counts against `maxTurns`, and increments the participant's `consecutiveFailures`.
+   - Synthetic turns never emit canonical messages (`collaboration_messages` row count remains 0 for synthetic failures).
+   - If budgets are exhausted (wall-clock expired, `maxTurns` reached, or retry limit exceeded), the run transitions to `timed_out`, `budget_exhausted`, or `failed`.
+   - Otherwise, the run transitions to `paused` with `activeParticipantId = null`.
+
+4. **Explicit Resumption (`RunController.resumeRoleBasedRun(runId, options)`):**
+   - P4 provides an internal controller API only (there is no REST resume route in P4).
+   - **Replay Protection:** A participant may have executed filesystem writes or external side-effects before the daemon crashed. If the latest attempt for the current resumable role was interrupted (`error.code === 'daemon_restarted'`), resumption fails closed unless the caller explicitly passes `allowReplayInterruptedTurn: true`.
+   - **Wall-Clock Budget Integrity:** The wall-clock origin remains the original persisted `startedAt`. Daemon downtime and pause duration count against `budget.maxWallClockMs`.
+   - **Historical Snapshot Authority:** Resumption reconstructs participant adapters exclusively from persisted `role_snapshot_json` and `config_snapshot_json`. It never consults the current `RoleRegistry` or ambient environment. Profiles and providers (e.g. `acp:antigravity` -> `agy-acp`) are preserved exactly without fallback.
+   - **Deterministic Cursor & Hash Verification:** The controller re-reads canonical history from SQLite, verifies SHA-256 message content hashes, validates round/turn provenance, and derives the next sequence index before dispatching turns.
+   - **Terminal Budget Enforcement:** If wall-clock or turn limits are already exhausted at resume time, the run is durably persisted as `timed_out` or `budget_exhausted` without instantiating adapters.
+
 
 ---
 

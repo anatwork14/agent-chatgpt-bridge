@@ -28,8 +28,10 @@ import {
   normalizeCancellationReason,
   RoleRunAbortError,
   readRoleRunAbortReason,
+  requireValidStartedAt,
   P4_DEFAULT_BUDGET,
 } from "./collaboration-domain";
+
 import type {
   PreparedRoleParticipants,
   ParticipantRuntime,
@@ -945,8 +947,9 @@ export class RunController {
     // On resume: startTimestamp is parsed from run.startedAt so wall-clock includes
     // the time the daemon was down and the time the run was paused.
     const startTimestamp = cursor
-      ? new Date(initialRun.startedAt!).getTime()
+      ? requireValidStartedAt(initialRun, nowFn())
       : nowFn();
+
     const budget = initialRun.budget;
 
     const plansByRoleId = new Map<string, (typeof prepared.plans)[number]>();
@@ -1947,7 +1950,6 @@ export class RunController {
     let pausedAtSafeBoundary = 0;
     let syntheticTurnRecorded = 0;
     let budgetExhaustedAtRecovery = 0;
-    const failedRunIds: string[] = [];
 
     for (const run of orphanedRuns) {
       // Skip any run that's already active in this process (should be impossible at startup, but guard)
@@ -1961,8 +1963,14 @@ export class RunController {
           onSyntheticTurnRecorded: () => { syntheticTurnRecorded++; },
           onBudgetExhaustedAtRecovery: () => { budgetExhaustedAtRecovery++; },
         });
-      } catch {
-        failedRunIds.push(run.id);
+      } catch (err) {
+        const underlyingMessage = err instanceof Error ? err.message : String(err);
+        const underlyingCode = err instanceof BridgeError ? err.code : "unknown";
+        throw new BridgeError(
+          "role_run_recovery_failed",
+          `Failed to recover role-based run '${run.id}' (${underlyingCode}): ${underlyingMessage}`,
+          false,
+        );
       }
     }
 
@@ -1971,7 +1979,7 @@ export class RunController {
       pausedAtSafeBoundary,
       syntheticTurnRecorded,
       budgetExhaustedAtRecovery,
-      failedRunIds,
+      failedRunIds: [],
     };
   }
 
@@ -1988,12 +1996,53 @@ export class RunController {
   ): void {
     const nowMs = nowFn();
     const nowIso = clock();
+    const originMs = requireValidStartedAt(run, nowMs);
+    const wallClockElapsed = nowMs - originMs;
 
     if (!run.activeParticipantId) {
-      // Case A: safe boundary — no active participant when crash occurred
+      // Case A: safe boundary — no active participant when crash occurred.
+      // Validate that no participant in participantsById is currently marked "active"
+      for (const [pId, part] of Object.entries(run.participantsById)) {
+        if (part.status === "active") {
+          throw new BridgeError(
+            "persistence_corruption",
+            `Run '${run.id}' has no activeParticipantId but participant '${pId}' has status 'active'`,
+            false,
+          );
+        }
+      }
+
+      // Safe-boundary budget precedence:
+      // 1. wall-clock expiration -> timed_out
+      // 2. turn budget exhaustion -> budget_exhausted
+      // 3. otherwise safe paused boundary -> paused
+      if (wallClockElapsed >= run.budget.maxWallClockMs) {
+        persistence.finalizeRun(run.id, {
+          status: "timed_out",
+          activeParticipantId: null,
+          completedAt: nowIso,
+          finalSummary: `Exceeded maximum wall-clock deadline (${run.budget.maxWallClockMs} ms)`,
+        });
+        callbacks.onBudgetExhaustedAtRecovery();
+        return;
+      }
+
+      const existingTurns = persistence.getTurns(run.id);
+      if (existingTurns.length >= run.budget.maxTurns) {
+        persistence.finalizeRun(run.id, {
+          status: "budget_exhausted",
+          activeParticipantId: null,
+          completedAt: nowIso,
+          finalSummary: `Exceeded maximum allowed turns (${run.budget.maxTurns})`,
+        });
+        callbacks.onBudgetExhaustedAtRecovery();
+        return;
+      }
+
       persistence.finalizeRun(run.id, {
         status: "paused",
         activeParticipantId: null,
+        finalSummary: null,
       });
       callbacks.onPausedAtSafeBoundary();
       return;
@@ -2003,26 +2052,30 @@ export class RunController {
     const activeParticipantId = run.activeParticipantId;
     const activeParticipant = run.participantsById[activeParticipantId];
     if (!activeParticipant) {
-      // Corrupt state — transition to paused as safe fallback
-      persistence.finalizeRun(run.id, {
-        status: "paused",
-        activeParticipantId: null,
-      });
-      callbacks.onPausedAtSafeBoundary();
-      return;
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}' references activeParticipantId '${activeParticipantId}' which does not exist in participantsById`,
+        false,
+      );
     }
 
-    // Determine existing turn count for the synthetic turn index
     const existingTurns = persistence.getTurns(run.id);
-    const syntheticTurnIndex = existingTurns.length;
+    const turnsBeforeSynthetic = existingTurns.length;
+    if (turnsBeforeSynthetic >= run.budget.maxTurns) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}' has active participant '${activeParticipantId}' but turn count already reached or exceeded maxTurns (${turnsBeforeSynthetic} >= ${run.budget.maxTurns})`,
+        false,
+      );
+    }
+
+    const syntheticTurnIndex = turnsBeforeSynthetic;
+    const turnsAfterSynthetic = turnsBeforeSynthetic + 1;
     const consecutiveFailures = (activeParticipant.consecutiveFailures ?? 0) + 1;
 
     // Evaluate budget state at recovery time
-    const wallClockElapsed = run.startedAt
-      ? nowMs - new Date(run.startedAt).getTime()
-      : nowMs;
     const wallClockExpired = wallClockElapsed >= run.budget.maxWallClockMs;
-    const turnsExhausted = syntheticTurnIndex >= run.budget.maxTurns;
+    const turnsExhausted = turnsAfterSynthetic >= run.budget.maxTurns;
     const retriesExhausted = consecutiveFailures > run.budget.maxRetriesPerParticipant;
 
     // Determine final status after synthetic turn
@@ -2051,6 +2104,15 @@ export class RunController {
       finalCompletedAt = null;
     }
 
+    let turnStartedAt = nowIso;
+    if (activeParticipant.lastActiveAt) {
+      const parsedLastActive = Date.parse(activeParticipant.lastActiveAt);
+      if (Number.isFinite(parsedLastActive) && parsedLastActive <= nowMs) {
+        turnStartedAt = activeParticipant.lastActiveAt;
+      }
+    }
+    const turnCompletedAt = nowIso;
+
     const syntheticTurnId = generateCollaborationTurnId();
     const syntheticTurn: CollaborationTurnRecord = {
       id: syntheticTurnId,
@@ -2066,8 +2128,8 @@ export class RunController {
         message: `Daemon restarted during participant turn. The participant may have executed side effects before the crash.`,
         retryable: true,
       },
-      startedAt: nowIso,
-      completedAt: nowIso,
+      startedAt: turnStartedAt,
+      completedAt: turnCompletedAt,
       // durationMs intentionally omitted — duration is unknown after crash
     };
 
@@ -2077,7 +2139,7 @@ export class RunController {
         ? "failed"
         : "idle",
       consecutiveFailures,
-      lastActiveAt: nowIso,
+      lastActiveAt: turnCompletedAt,
     };
 
     // Atomic: write synthetic turn + update participant + transition run status
@@ -2116,10 +2178,11 @@ export class RunController {
    *   1. Load canonical run → verify paused
    *   2. Reserve resume lock (prevent double-resume)
    *   3. Load participants/turns/transcript
-   *   4. Derive and validate execution cursor (hash integrity)
+   *   4. Derive and validate execution cursor (hash integrity + provenance)
+   *   4.5 Check loopMode = "once" already-complete cursor → finalize completed without adapters
    *   5. Validate replay requirement vs allowReplayInterruptedTurn
-   *   6. Check wall-clock budget from original startedAt
-   *   7. Check maxTurns budget
+   *   6. Check wall-clock budget from original startedAt → persist timed_out if expired
+   *   7. Check maxTurns budget → persist budget_exhausted if reached
    *   8. Validate bridge session (not closed)
    *   9. Preflight/restore participants (non-spawning)
    *   10. Persist paused → running transition
@@ -2173,14 +2236,30 @@ export class RunController {
   ): Promise<RoleBasedCollaborationRun> {
     const nowFn = options?.now ?? (() => Date.now());
     const clock = options?.clock ?? (() => new Date().toISOString());
+    const nowMs = nowFn();
 
     // Step 3: Load participants, turns, transcript
     const participants = persistence.getParticipants(run.id);
     const turns = persistence.getTurns(run.id);
     const messages = persistence.getTranscript(run.id);
 
-    // Step 4: Derive execution cursor (validates turn/message continuity + hash integrity)
+    // Step 4: Derive execution cursor (validates turn/message continuity + hash integrity + provenance)
     const cursor = deriveRoleExecutionCursor(run, participants, turns, messages);
+
+    // Step 4.5: loopMode = "once" already-complete cursor check (Item 32)
+    if (run.policy.loopMode === "once" && cursor.sequenceIndex >= run.policy.roleSequence.length) {
+      persistence.finalizeRun(run.id, {
+        status: "completed",
+        activeParticipantId: null,
+        completedAt: clock(),
+        finalSummary: run.finalSummary ?? "All workflow roles completed successfully",
+      });
+      const finalRun = persistence.getRun(run.id);
+      if (!finalRun) {
+        throw new BridgeError("not_found", `Role-based run '${run.id}' not found after completion finalization`, false);
+      }
+      return finalRun;
+    }
 
     // Step 5: Validate replay requirement
     if (cursor.interruptedTurnReplayRequired && options?.allowReplayInterruptedTurn !== true) {
@@ -2193,27 +2272,31 @@ export class RunController {
       );
     }
 
-    // Step 6: Check wall-clock budget from original startedAt
-    if (!run.startedAt) {
-      throw new BridgeError(
-        "persistence_corruption",
-        `Run '${run.id}' has no startedAt timestamp`,
-        false,
-      );
-    }
-    const originMs = new Date(run.startedAt).getTime();
-    const nowMs = nowFn();
+    // Step 6: Check wall-clock budget from original startedAt (Item 33, 34, 36)
+    const originMs = requireValidStartedAt(run, nowMs);
     const wallClockElapsed = nowMs - originMs;
     if (wallClockElapsed >= run.budget.maxWallClockMs) {
+      persistence.finalizeRun(run.id, {
+        status: "timed_out",
+        activeParticipantId: null,
+        completedAt: clock(),
+        finalSummary: `Exceeded maximum wall-clock deadline (${run.budget.maxWallClockMs} ms)`,
+      });
       throw new BridgeError(
-        "budget_exhausted",
+        "timed_out",
         `Run '${run.id}' wall-clock budget exhausted (${wallClockElapsed} ms elapsed, limit ${run.budget.maxWallClockMs} ms). Cannot resume.`,
         false,
       );
     }
 
-    // Step 7: Check maxTurns budget
+    // Step 7: Check maxTurns budget (Item 33, 35, 36)
     if (cursor.nextTurnIndex >= run.budget.maxTurns) {
+      persistence.finalizeRun(run.id, {
+        status: "budget_exhausted",
+        activeParticipantId: null,
+        completedAt: clock(),
+        finalSummary: `Exceeded maximum allowed turns (${run.budget.maxTurns})`,
+      });
       throw new BridgeError(
         "budget_exhausted",
         `Run '${run.id}' turn budget exhausted (${cursor.nextTurnIndex} turns consumed, limit ${run.budget.maxTurns}). Cannot resume.`,
@@ -2361,10 +2444,16 @@ export class RunController {
  *   so it can be tested deterministically without database infrastructure.
  *
  * Algorithm:
- *   1. Validate structural integrity (turn index gaps, message sequence gaps, participant ordering)
- *   2. Re-derive round/seqIdx by replaying the turn history in order
- *   3. Identify if the last relevant turn was daemon_restarted (requiring replay acknowledgement)
- *   4. Reconstruct priorTurns from hash-verified canonical messages
+ *   1. Validate startedAt timestamp existence and integrity.
+ *   2. Validate paused invariants (activeParticipantId must be undefined; no participant active).
+ *   3. Validate participant identity graph against policy.roleSequence and participantIds.
+ *   4. Validate turn sequence continuity (turnIndex: 0..N-1) and provenance.
+ *   5. Validate message sequence continuity (sequenceIndex: 0..M-1), hash integrity,
+ *      association to existing turns, and consistency with turn decisions.
+ *   6. Replay turns in order to deterministically derive round, sequenceIndex,
+ *      consecutiveFailures, and turnsExecuted counters.
+ *   7. Validate participant execution counters against replayed canonical history.
+ *   8. Determine whether an interrupted turn replay acknowledgement is required.
  *
  * Failures are fail-closed: any integrity violation throws BridgeError("persistence_corruption", ...)
  */
@@ -2374,53 +2463,35 @@ export function deriveRoleExecutionCursor(
   turns: readonly CollaborationTurnRecord[],
   messages: readonly CollaborationMessageRecord[],
 ): RoleExecutionCursor {
-  // Validate startedAt (required for wall-clock tracking)
-  if (!run.startedAt) {
-    throw new BridgeError(
-      "persistence_corruption",
-      `Run '${run.id}' is missing startedAt timestamp required for cursor derivation`,
-      false,
-    );
-  }
+  // 1. Validate startedAt (required for wall-clock tracking)
+  requireValidStartedAt(run);
 
-  // Validate turn index continuity: must be 0, 1, 2, ..., N-1
-  const sortedTurns = [...turns].sort((a, b) => a.turnIndex - b.turnIndex);
-  for (let i = 0; i < sortedTurns.length; i++) {
-    if (sortedTurns[i]!.turnIndex !== i) {
+  // 2. Validate paused run invariants (Item 30)
+  if (run.status === "paused") {
+    if (run.activeParticipantId !== undefined && run.activeParticipantId !== null) {
       throw new BridgeError(
         "persistence_corruption",
-        `Run '${run.id}': turn index gap detected at position ${i} (found turnIndex=${sortedTurns[i]!.turnIndex})`,
+        `Run '${run.id}' has status 'paused' but activeParticipantId is set to '${run.activeParticipantId}'`,
         false,
       );
     }
-  }
-
-  // Validate message sequence continuity: must be 0, 1, 2, ..., M-1
-  const sortedMessages = [...messages].sort((a, b) => a.sequenceIndex - b.sequenceIndex);
-  for (let i = 0; i < sortedMessages.length; i++) {
-    if (sortedMessages[i]!.sequenceIndex !== i) {
-      throw new BridgeError(
-        "persistence_corruption",
-        `Run '${run.id}': message sequence gap detected at position ${i} (found sequenceIndex=${sortedMessages[i]!.sequenceIndex})`,
-        false,
-      );
+    for (const p of participants) {
+      if (p.status === "active") {
+        throw new BridgeError(
+          "persistence_corruption",
+          `Run '${run.id}' has status 'paused' but participant '${p.id}' has status 'active'`,
+          false,
+        );
+      }
     }
-  }
-
-  // Validate and verify hash integrity of all messages
-  for (const msg of sortedMessages) {
-    assertCollaborationMessageIntegrity(msg);
-  }
-
-  // Validate participant sequenceIndex: must be 0..N-1 with no duplicates
-  const sortedParticipants = [...participants].sort((a, b) => a.sequenceIndex - b.sequenceIndex);
-  for (let i = 0; i < sortedParticipants.length; i++) {
-    if (sortedParticipants[i]!.sequenceIndex !== i) {
-      throw new BridgeError(
-        "persistence_corruption",
-        `Run '${run.id}': participant sequence gap detected at position ${i} (found sequenceIndex=${sortedParticipants[i]!.sequenceIndex})`,
-        false,
-      );
+    for (const [pId, pRecord] of Object.entries(run.participantsById)) {
+      if (pRecord.status === "active") {
+        throw new BridgeError(
+          "persistence_corruption",
+          `Run '${run.id}' has status 'paused' but participant '${pId}' in participantsById has status 'active'`,
+          false,
+        );
+      }
     }
   }
 
@@ -2428,54 +2499,340 @@ export function deriveRoleExecutionCursor(
   const roleSequence = policy.roleSequence;
   const numRoles = roleSequence.length;
 
-  // Build participantId → sequenceIndex map from persisted participants
-  const participantSeqMap = new Map<string, number>();
-  for (const p of sortedParticipants) {
-    participantSeqMap.set(p.id, p.sequenceIndex);
+  // 3. Validate participant identity graph (Item 21)
+  if (
+    participants.length !== run.participantIds.length ||
+    run.participantIds.length !== numRoles
+  ) {
+    throw new BridgeError(
+      "persistence_corruption",
+      `Run '${run.id}': participant count mismatch (participants=${participants.length}, participantIds=${run.participantIds.length}, roleSequence=${numRoles})`,
+      false,
+    );
   }
 
-  // Replay turns to derive round/seqIdx
+  if (new Set(run.participantIds).size !== run.participantIds.length) {
+    throw new BridgeError(
+      "persistence_corruption",
+      `Run '${run.id}': duplicate participant IDs in participantIds list`,
+      false,
+    );
+  }
+
+  if (new Set(participants.map((p) => p.id)).size !== participants.length) {
+    throw new BridgeError(
+      "persistence_corruption",
+      `Run '${run.id}': duplicate participant IDs in persisted participants`,
+      false,
+    );
+  }
+
+  const sortedParticipants = [...participants].sort((a, b) => a.sequenceIndex - b.sequenceIndex);
+  for (let i = 0; i < sortedParticipants.length; i++) {
+    const p = sortedParticipants[i]!;
+    if (p.sequenceIndex !== i) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': participant sequence gap detected at position ${i} (found sequenceIndex=${p.sequenceIndex})`,
+        false,
+      );
+    }
+    if (p.runId !== run.id) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': participant '${p.id}' belongs to run '${p.runId}'`,
+        false,
+      );
+    }
+    if (p.id !== run.participantIds[i]) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': participant sequenceIndex ${i} ID mismatch: expected '${run.participantIds[i]}', found '${p.id}'`,
+        false,
+      );
+    }
+    if (p.roleId !== roleSequence[i]) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': participant sequenceIndex ${i} role mismatch: expected '${roleSequence[i]}', found '${p.roleId}'`,
+        false,
+      );
+    }
+    const fromById = run.participantsById[p.id];
+    if (!fromById) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': participant '${p.id}' missing from run.participantsById`,
+        false,
+      );
+    }
+    if (fromById.roleId !== p.roleId) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': participant '${p.id}' role mismatch between participantsById ('${fromById.roleId}') and persisted participant ('${p.roleId}')`,
+        false,
+      );
+    }
+  }
+
+  const participantMap = new Map<string, PersistedParticipant>();
+  for (const p of sortedParticipants) {
+    participantMap.set(p.id, p);
+  }
+
+  // 4. Validate turn sequence continuity and structure (Item 22)
+  const sortedTurns = [...turns].sort((a, b) => a.turnIndex - b.turnIndex);
+  for (let i = 0; i < sortedTurns.length; i++) {
+    const turn = sortedTurns[i]!;
+    if (turn.turnIndex !== i) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': turn index gap detected at position ${i} (found turnIndex=${turn.turnIndex})`,
+        false,
+      );
+    }
+    if (turn.runId !== run.id) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': turn '${turn.id}' belongs to run '${turn.runId}'`,
+        false,
+      );
+    }
+    const participant = participantMap.get(turn.participantId);
+    if (!participant) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': turn '${turn.id}' references unknown participant '${turn.participantId}'`,
+        false,
+      );
+    }
+    if (turn.roleId !== participant.roleId) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': turn '${turn.id}' role '${turn.roleId}' does not match participant role '${participant.roleId}'`,
+        false,
+      );
+    }
+  }
+
+  const turnsById = new Map<string, CollaborationTurnRecord>();
+  for (const t of sortedTurns) {
+    turnsById.set(t.id, t);
+  }
+
+  // 5. Validate message sequence continuity, hash integrity, and decision consistency (Items 25, 26, 27)
+  const sortedMessages = [...messages].sort((a, b) => a.sequenceIndex - b.sequenceIndex);
+  for (let i = 0; i < sortedMessages.length; i++) {
+    const msg = sortedMessages[i]!;
+    if (msg.sequenceIndex !== i) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': message sequence gap detected at position ${i} (found sequenceIndex=${msg.sequenceIndex})`,
+        false,
+      );
+    }
+    if (msg.runId !== run.id) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': message '${msg.id}' belongs to run '${msg.runId}'`,
+        false,
+      );
+    }
+    assertCollaborationMessageIntegrity(msg);
+
+    const turn = turnsById.get(msg.turnId);
+    if (!turn) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': message '${msg.id}' references nonexistent turn '${msg.turnId}'`,
+        false,
+      );
+    }
+    if (msg.senderParticipantId !== turn.participantId) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': message '${msg.id}' senderParticipantId '${msg.senderParticipantId}' does not match turn participant '${turn.participantId}'`,
+        false,
+      );
+    }
+    if (msg.senderRoleId !== turn.roleId) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': message '${msg.id}' senderRoleId '${msg.senderRoleId}' does not match turn role '${turn.roleId}'`,
+        false,
+      );
+    }
+
+    // Operational failures (daemon_restarted, timeout, cancelled, adapter threw) must NOT have canonical messages (Item 27)
+    if (!turn.decision || turn.error?.code === "daemon_restarted" || turn.status === "cancelled") {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': turn '${turn.id}' is an operational failure or cancelled turn and must not produce a canonical message`,
+        false,
+      );
+    }
+
+    // Decision type and content consistency (Item 26)
+    if (msg.decisionType !== turn.decision.type) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': message '${msg.id}' decisionType '${msg.decisionType}' does not match turn decision type '${turn.decision.type}'`,
+        false,
+      );
+    }
+
+    let expectedText = "";
+    if (turn.decision.type === "message") {
+      expectedText = turn.decision.content;
+    } else if (turn.decision.type === "done") {
+      expectedText = turn.decision.summary;
+    } else if (turn.decision.type === "pause") {
+      expectedText = turn.decision.reason;
+    } else if (turn.decision.type === "error") {
+      expectedText = turn.decision.message;
+    }
+
+    if (normalizeCanonicalText(msg.content) !== normalizeCanonicalText(expectedText)) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': message '${msg.id}' content does not match turn decision text: expected '${expectedText}', found '${msg.content}'`,
+        false,
+      );
+    }
+  }
+
+  // 6. Turn scheduling replay & round validation (Items 22, 23, 24, 28, 29)
   let round = 0;
   let seqIdx = 0;
+  const derivedTurnsExecuted = new Map<string, number>();
+  const derivedConsecutiveFailures = new Map<string, number>();
+  for (const p of sortedParticipants) {
+    derivedTurnsExecuted.set(p.id, 0);
+    derivedConsecutiveFailures.set(p.id, 0);
+  }
+
+  for (const turn of sortedTurns) {
+    if (seqIdx >= numRoles) {
+      if (policy.loopMode === "repeat_until_done") {
+        seqIdx = 0;
+        round += 1;
+      } else {
+        throw new BridgeError(
+          "persistence_corruption",
+          `Run '${run.id}': turn ${turn.turnIndex} executed after 'once' loopMode sequence was already complete`,
+          false,
+        );
+      }
+    }
+
+    const expectedParticipantId = run.participantIds[seqIdx]!;
+    const expectedRoleId = roleSequence[seqIdx]!;
+
+    if (turn.participantId !== expectedParticipantId) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': turn ${turn.turnIndex} participant '${turn.participantId}' does not match expected participant '${expectedParticipantId}' at round ${round}, seqIdx ${seqIdx}`,
+        false,
+      );
+    }
+    if (turn.roleId !== expectedRoleId) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': turn ${turn.turnIndex} role '${turn.roleId}' does not match expected role '${expectedRoleId}' at round ${round}, seqIdx ${seqIdx}`,
+        false,
+      );
+    }
+    if (turn.round !== round) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': turn ${turn.turnIndex} round ${turn.round} does not match derived round ${round}`,
+        false,
+      );
+    }
+
+    if (turn.status === "completed") {
+      derivedTurnsExecuted.set(turn.participantId, (derivedTurnsExecuted.get(turn.participantId) ?? 0) + 1);
+      derivedConsecutiveFailures.set(turn.participantId, 0);
+      seqIdx += 1;
+      if (seqIdx >= numRoles && policy.loopMode === "repeat_until_done") {
+        seqIdx = 0;
+        round += 1;
+      }
+    } else if (turn.status === "failed") {
+      derivedConsecutiveFailures.set(turn.participantId, (derivedConsecutiveFailures.get(turn.participantId) ?? 0) + 1);
+      // Failed turn: seqIdx and round do NOT advance
+    } else if (turn.status === "cancelled") {
+      // Cancelled turn: seqIdx and round do NOT advance
+    } else {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': turn ${turn.turnIndex} has invalid status '${turn.status}'`,
+        false,
+      );
+    }
+  }
+
+  // 7. Validate execution counters (Items 28, 29)
+  for (const p of sortedParticipants) {
+    const expectedExec = derivedTurnsExecuted.get(p.id) ?? 0;
+    const expectedFail = derivedConsecutiveFailures.get(p.id) ?? 0;
+
+    if (p.turnsExecuted !== expectedExec) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': participant '${p.id}' persisted turnsExecuted (${p.turnsExecuted}) does not match canonical completed turns (${expectedExec})`,
+        false,
+      );
+    }
+    if (p.consecutiveFailures !== expectedFail) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': participant '${p.id}' persisted consecutiveFailures (${p.consecutiveFailures}) does not match derived trailing failures (${expectedFail})`,
+        false,
+      );
+    }
+    if (p.consecutiveFailures < 0 || !Number.isInteger(p.consecutiveFailures)) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `Run '${run.id}': participant '${p.id}' has invalid consecutiveFailures (${p.consecutiveFailures})`,
+        false,
+      );
+    }
+
+    const fromById = run.participantsById[p.id];
+    if (fromById) {
+      if (fromById.turnsExecuted !== expectedExec) {
+        throw new BridgeError(
+          "persistence_corruption",
+          `Run '${run.id}': participant '${p.id}' in participantsById turnsExecuted (${fromById.turnsExecuted}) does not match canonical completed turns (${expectedExec})`,
+          false,
+        );
+      }
+      if (fromById.consecutiveFailures !== expectedFail) {
+        throw new BridgeError(
+          "persistence_corruption",
+          `Run '${run.id}': participant '${p.id}' in participantsById consecutiveFailures (${fromById.consecutiveFailures}) does not match derived trailing failures (${expectedFail})`,
+          false,
+        );
+      }
+    }
+  }
+
+  // 8. Replay requirement check (Item 31)
   let interruptedTurnReplayRequired = false;
   let interruptedParticipantId: string | undefined = undefined;
 
-  for (const turn of sortedTurns) {
-    if (turn.status === "completed") {
-      // Successful turn: advance to the next role in sequence
-      seqIdx += 1;
-      if (seqIdx >= numRoles) {
-        if (policy.loopMode === "once") {
-          // Sequence complete — cursor is at the end (run should be terminal)
-          seqIdx = numRoles;
-        } else {
-          seqIdx = 0;
-          round += 1;
-        }
-      }
-      // Clear any prior interruption flag on success
-      interruptedTurnReplayRequired = false;
-      interruptedParticipantId = undefined;
-    } else if (turn.status === "failed") {
-      // Failed turn: check if it's a daemon_restarted special code
-      if (turn.error?.code === "daemon_restarted") {
-        // Mark replay required; seqIdx stays on same participant
-        interruptedTurnReplayRequired = true;
-        interruptedParticipantId = turn.participantId;
-      } else {
-        // Ordinary failure (retryable or not): seqIdx stays (retry on same role)
-        interruptedTurnReplayRequired = false;
-        interruptedParticipantId = undefined;
-      }
-    } else if (turn.status === "cancelled") {
-      // Cancelled turn: leave seqIdx where it is; run should be terminal
-      interruptedTurnReplayRequired = false;
-      interruptedParticipantId = undefined;
+  if (seqIdx < numRoles) {
+    const currentParticipantId = run.participantIds[seqIdx]!;
+    const participantTurns = sortedTurns.filter((t) => t.participantId === currentParticipantId);
+    const lastTurn = participantTurns.length > 0 ? participantTurns[participantTurns.length - 1] : undefined;
+    if (lastTurn && lastTurn.status === "failed" && lastTurn.error?.code === "daemon_restarted") {
+      interruptedTurnReplayRequired = true;
+      interruptedParticipantId = currentParticipantId;
     }
-    // "running" status turns are not expected in a fully persisted transcript — ignore
   }
 
-  // Reconstruct priorTurns from canonical messages (already hash-verified above)
+  // Reconstruct priorTurns from canonical messages
   const priorTurns = collaborationMessagesToPriorTurns(sortedMessages);
 
   return {
@@ -2488,4 +2845,5 @@ export function deriveRoleExecutionCursor(
     interruptedParticipantId,
   };
 }
+
 

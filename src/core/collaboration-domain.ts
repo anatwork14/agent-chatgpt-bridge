@@ -444,3 +444,38 @@ export interface RoleBasedResumeOptions {
   readonly now?: () => number;
 }
 
+/**
+ * Validates that run.startedAt exists, parses to a finite timestamp,
+ * and does not exceed the current time beyond acceptable clock skew.
+ *
+ * @throws BridgeError with code "persistence_corruption" if invalid or missing.
+ */
+export function requireValidStartedAt(
+  run: RoleBasedCollaborationRun,
+  nowMs?: number,
+): number {
+  if (!run.startedAt || typeof run.startedAt !== "string") {
+    throw new BridgeError(
+      "persistence_corruption",
+      `Run '${run.id}' is missing required startedAt timestamp`,
+      false,
+    );
+  }
+  const parsed = Date.parse(run.startedAt);
+  if (!Number.isFinite(parsed) || isNaN(parsed)) {
+    throw new BridgeError(
+      "persistence_corruption",
+      `Run '${run.id}' has invalid startedAt timestamp '${run.startedAt}'`,
+      false,
+    );
+  }
+  if (nowMs !== undefined && parsed > nowMs + 60_000) {
+    throw new BridgeError(
+      "persistence_corruption",
+      `Run '${run.id}' has startedAt timestamp in the future beyond acceptable clock skew ('${run.startedAt}')`,
+      false,
+    );
+  }
+  return parsed;
+}
+

@@ -269,8 +269,19 @@ export async function createBridgeRuntime(
 
   // P4.6: Reconcile any role-based runs that were left in status=running by the previous
   // daemon instance. This MUST run before any new runs can start.
-  const recoveryReport = runController.recoverRoleBasedRuns();
+  let recoveryReport;
+  try {
+    recoveryReport = runController.recoverRoleBasedRuns();
+  } catch (recoveryError) {
+    await Promise.allSettled([
+      sessionManager.shutdown(),
+      closeChatGptBrowserWorkers(),
+    ]);
+    closeDatabase();
+    throw recoveryError;
+  }
   const recoveredRoleBasedRuns = recoveryReport.examined;
+
 
   const apiToken = dependencies.apiToken ?? bridgeApiToken(config);
   const listModels = async () => registry.listModels();
