@@ -35,6 +35,13 @@ export interface CollaborationDagPersistence {
     readonly error?: CollaborationDagNodeRecord["error"];
   }): void;
 
+  reconcileInterruptedNode(params: {
+    readonly runId: string;
+    readonly nodeId: string;
+    readonly participant: ParticipantRecord;
+    readonly recoveredAt: string;
+  }): void;
+
   markNodeRunningTransaction(params: {
     readonly runId: string;
     readonly nodeId: string;
@@ -61,6 +68,7 @@ export interface CollaborationDagPersistence {
 
   finalizeRun(runId: string, updates: RoleBasedRunPatch): void;
 
+  listRunsByStatuses(statuses: readonly string[]): RoleBasedCollaborationRun[];
   getRun(runId: string): RoleBasedCollaborationRun | null;
   getMetadata(runId: string): CollaborationDagRunMetadata | null;
   getNodes(runId: string): CollaborationDagNodeRecord[];
