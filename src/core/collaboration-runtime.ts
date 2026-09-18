@@ -66,3 +66,28 @@ export interface RoleBasedExecutionOptions {
   readonly runIdFactory?: () => string;
   readonly messageIdFactory?: () => string;
 }
+
+
+import type {
+  CollaborationDagBudget,
+  CollaborationDagFailurePolicy,
+  CollaborationDagNodeRecord,
+} from "./collaboration-dag";
+import type { CollaborationDagPersistence } from "./collaboration-dag-persistence";
+
+export interface CollaborationDagExecutionOptions extends RoleBasedExecutionOptions {
+  readonly budget?: Partial<CollaborationDagBudget>;
+  readonly failurePolicy?: CollaborationDagFailurePolicy;
+}
+
+export interface ActiveCollaborationDagRunControl {
+  readonly runId: string;
+  readonly rootAbortController: AbortController;
+  readonly persistence: CollaborationDagPersistence;
+  attemptsStarted: number;
+}
+
+export interface CollaborationDagExecutionResult {
+  readonly run: RoleBasedCollaborationRun;
+  readonly nodes: readonly CollaborationDagNodeRecord[];
+}
