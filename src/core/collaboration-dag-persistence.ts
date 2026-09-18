@@ -27,6 +27,14 @@ export interface CollaborationDagPersistence {
 
   markNodeReady(runId: string, nodeId: string): void;
 
+  markNodeTerminal(params: {
+    readonly runId: string;
+    readonly nodeId: string;
+    readonly status: "failed" | "skipped" | "cancelled";
+    readonly completedAt: string;
+    readonly error?: CollaborationDagNodeRecord["error"];
+  }): void;
+
   markNodeRunningTransaction(params: {
     readonly runId: string;
     readonly nodeId: string;
@@ -50,6 +58,8 @@ export interface CollaborationDagPersistence {
         };
     readonly runUpdates?: RoleBasedRunPatch;
   }): void;
+
+  finalizeRun(runId: string, updates: RoleBasedRunPatch): void;
 
   getRun(runId: string): RoleBasedCollaborationRun | null;
   getMetadata(runId: string): CollaborationDagRunMetadata | null;
