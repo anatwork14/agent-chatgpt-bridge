@@ -91,3 +91,20 @@ export interface CollaborationDagExecutionResult {
   readonly run: RoleBasedCollaborationRun;
   readonly nodes: readonly CollaborationDagNodeRecord[];
 }
+
+
+export interface CollaborationDagRecoveryReport {
+  readonly examined: number;
+  readonly pausedAtSafeBoundary: number;
+  readonly interruptedNodesReconciled: number;
+  readonly completedAtRecovery: number;
+  readonly terminalAtRecovery: number;
+  readonly failedRunIds: readonly string[];
+}
+
+export interface CollaborationDagResumeOptions {
+  readonly allowReplayInterruptedNodes?: boolean;
+  readonly signal?: AbortSignal;
+  readonly clock?: () => string;
+  readonly now?: () => number;
+}
