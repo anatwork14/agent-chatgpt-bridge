@@ -836,6 +836,10 @@ export class CollaborationDagController {
     return this.persistence.getRun(runId);
   }
 
+  isDagRun(runId: string): boolean {
+    return this.persistence.getMetadata(runId) !== null;
+  }
+
   async cancelRun(
     runId: string,
     reason = "Collaboration DAG run was cancelled",
