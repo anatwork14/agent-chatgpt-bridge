@@ -121,3 +121,34 @@ export interface CollaborationDagExecutionPlan {
   readonly sinkNodeIds: readonly CollaborationDagNodeId[];
   readonly nodesById: Readonly<Record<CollaborationDagNodeId, CollaborationDagPlannedNode>>;
 }
+
+
+export interface CollaborationDagRunMetadata {
+  readonly runId: string;
+  readonly graph: CollaborationDagDefinition;
+  readonly failurePolicy: CollaborationDagFailurePolicy;
+  readonly maxParallelTurns: number;
+}
+
+export interface PersistedCollaborationDagInput extends CollaborationDagInputProvenance {
+  readonly runId: string;
+  readonly attempt: number;
+  readonly turnId: string;
+}
+
+const DAG_NODE_TRANSITIONS: Readonly<Record<CollaborationDagNodeStatus, readonly CollaborationDagNodeStatus[]>> = {
+  pending: ["ready", "skipped", "cancelled"],
+  ready: ["running", "skipped", "cancelled"],
+  running: ["ready", "completed", "failed", "cancelled"],
+  completed: ["completed"],
+  failed: ["failed"],
+  skipped: ["skipped"],
+  cancelled: ["cancelled"],
+};
+
+export function isValidCollaborationDagNodeTransition(
+  from: CollaborationDagNodeStatus,
+  to: CollaborationDagNodeStatus,
+): boolean {
+  return DAG_NODE_TRANSITIONS[from].includes(to);
+}
