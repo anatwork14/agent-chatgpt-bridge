@@ -521,6 +521,8 @@ To prevent credential and intellectual property leakage:
 
 ### 12.2 Collaboration Audit Taxonomy
 
+The core P4 collaboration audit taxonomy defines the standard event types for bounded sequential workflows. Note: The optional `collaboration.pause.requested` event is omitted because pause transitions in P4 are initiated solely by participant decisions rather than a controller-side API.
+
 | Audit Event Name | Emitted When | Critical Payload Attributes (`schemaVersion: 1`) |
 | :--- | :--- | :--- |
 | `collaboration.started` | Run validated and started | `roleSequence`, `terminalRoles`, `loopMode`, `maxTurns`, `maxWallClockMs`, `participantCount`, `objectiveLength` |
@@ -832,6 +834,7 @@ Each slice represents an independently testable, atomic unit of work:
 
 - **Slice P4.8: Live Multi-Agent Integration Smoke Test**
   - Execute live end-to-end smoke test with real Claude ACP and Antigravity ACP adapters collaborating on a synthetic coding objective.
+  - Validated release topology: Claude architect (`acp:claude`) → Antigravity implementer (`acp:antigravity`) → Claude reviewer (`acp:claude`).
   - Document evidence and metrics in `docs/P4_COLLABORATION_SMOKE.md`.
 
 ---
@@ -923,5 +926,5 @@ The P4 implementation suite will enforce the following deterministic test cases:
 - [x] Audit event sequence tests
 
 ### P4.8 — Claude + Antigravity Live Collaboration
-- [ ] Live ACP multi-agent smoke test
-- [ ] Evidence capture in `docs/P4_COLLABORATION_SMOKE.md`
+- [x] Live ACP multi-agent smoke test (Claude architect → Antigravity implementer → Claude reviewer)
+- [x] Evidence capture in `docs/P4_COLLABORATION_SMOKE.md`
