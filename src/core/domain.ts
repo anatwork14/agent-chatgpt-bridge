@@ -172,6 +172,13 @@ export interface PriorCollaborationTurn {
   readonly text: string;
 }
 
+export interface CollaborationDagTurnContext {
+  readonly nodeId: string;
+  readonly dependencyNodeIds: readonly string[];
+  readonly predecessorMessageIds: readonly string[];
+  readonly attempt: number;
+}
+
 export interface CollaborationTurnContext {
   readonly participantId: string;
   readonly roleId: string;
@@ -179,6 +186,7 @@ export interface CollaborationTurnContext {
   readonly systemInstructions: string;
   readonly sequenceIndex: number;
   readonly priorTurns: readonly PriorCollaborationTurn[];
+  readonly dag?: CollaborationDagTurnContext;
 }
 
 export interface AgentTurnInput {
