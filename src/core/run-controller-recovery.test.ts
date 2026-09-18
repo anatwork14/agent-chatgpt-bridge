@@ -892,10 +892,19 @@ describe("Real SQLite Daemon Restart & Resumption", () => {
     dbPath = path.join(tempDir, "bridge_test.db");
   });
 
+  function safeRmDir(dir: string): void {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch {
+      // Windows file locking fallback
+    }
+  }
+
   afterEach(() => {
     closeDatabase();
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    safeRmDir(tempDir);
   });
+
 
   it("Real SQLite safe-boundary restart (Item 41)", () => {
     // Daemon #1: create session, run, persist healthy running state at safe boundary
@@ -1167,10 +1176,19 @@ describe("BridgeRuntime Startup Recovery Fail-Closed", () => {
     dbPath = path.join(tempDir, "bridge_fail.db");
   });
 
+  function safeRmDir(dir: string): void {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch {
+      // Windows file locking fallback
+    }
+  }
+
   afterEach(() => {
     closeDatabase();
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    safeRmDir(tempDir);
   });
+
 
   it("corrupt orphaned P4 state causes createBridgeRuntime to reject and clean up database (Item 18)", async () => {
     // Inject corrupt state in SQLite: activeParticipantId points to nonexistent participant

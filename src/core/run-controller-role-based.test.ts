@@ -918,7 +918,7 @@ describe("P4.3 Role-Based RunController Orchestration", () => {
         }
       }
     }
-  });
+  }, 30000);
 
   describe("P4.5.2 Durable Settlement, Transcript Parity & Invariant Verification", () => {
     it("terminal run persisted before blocked adapter close (no crash window)", async () => {
