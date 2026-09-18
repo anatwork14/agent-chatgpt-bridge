@@ -1,7 +1,7 @@
 # P5: Bounded Multi-Participant Collaboration DAG Specification
 
 **Document Version:** 1.0.0  
-**Status:** IMPLEMENTED / LIVE SIGN-OFF PENDING  
+**Status:** IMPLEMENTED + LIVE SIGN-OFF COMPLETE  
 **Target Milestone:** P5 (`feat/p5-bounded-collaboration-dag`)  
 **Baseline:** P4 merged to `main` at `ac3cd2a56b7335b098251f0377f7d0620f0b9186`  
 **Tracking Issue:** #9  
@@ -668,7 +668,7 @@ Additional P5 requirements:
 
 ### P5.8 — Live multi-agent DAG smoke
 
-Status: **PENDING REAL LIVE EXECUTION**
+Status: **PASS — REAL CLAUDE + ANTIGRAVITY SIGN-OFF COMPLETE**
 
 Run:
 
@@ -687,16 +687,16 @@ objective -> architect                         +-> synthesizer/reviewer (Claude)
                      +-> implementer (Antigravity) -+
 ```
 
-The release smoke MUST prove:
+Real sign-off completed on implementation head `a25ae80d3fcf898e0071544d05adcf0a1009d0c4` via `bun run smoke:p5:live`. The release smoke proved:
 
-- two independent branches actually overlap in wall-clock execution when assigned to different participants;
-- `maxParallelTurns` is never exceeded;
-- fan-in receives both persisted branch outputs;
-- output order is deterministic regardless of completion order;
-- no direct agent-to-agent prompt chaining occurs;
-- cancellation cleans all active adapter processes;
-- persistence and audit integrity pass;
-- no credentials or raw prompt/output leak into audit records.
+- [x] two independent branches actually overlap in wall-clock execution when assigned to different participants;
+- [x] `maxParallelTurns` is never exceeded;
+- [x] fan-in receives both persisted branch outputs;
+- [x] output order is deterministic regardless of completion order;
+- [x] no direct agent-to-agent prompt chaining occurs;
+- [x] cancellation cleans all active adapter processes;
+- [x] persistence and audit integrity pass;
+- [x] no credentials or raw prompt/output leak into audit records.
 
 ---
 
