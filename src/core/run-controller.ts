@@ -40,6 +40,8 @@ import type {
   ActiveRoleRunControl,
   CollaborationDagExecutionOptions,
   CollaborationDagExecutionResult,
+  CollaborationDagRecoveryReport,
+  CollaborationDagResumeOptions,
 } from "./collaboration-runtime";
 import type {
   RoleBasedRunPersistence,
@@ -740,6 +742,53 @@ export class RunController {
   async cancelAllDagRuns(): Promise<number> {
     if (!this.dagController) return 0;
     return this.dagController.cancelAllRuns();
+  }
+
+
+  recoverDagRuns(options?: {
+    readonly now?: () => number;
+    readonly clock?: () => string;
+  }): CollaborationDagRecoveryReport {
+    if (!this.dagController) {
+      return {
+        examined: 0,
+        pausedAtSafeBoundary: 0,
+        interruptedNodesReconciled: 0,
+        completedAtRecovery: 0,
+        terminalAtRecovery: 0,
+        failedRunIds: [],
+      };
+    }
+    return this.dagController.recoverRunningRuns(options);
+  }
+
+  async resumeDagRun(
+    runId: string,
+    options?: CollaborationDagResumeOptions,
+  ): Promise<RoleBasedCollaborationRun> {
+    const dagController = this.requireDagController();
+
+    // Validate budgets/replay requirements before participant restoration.
+    const persistedParticipants = dagController.prepareResume(runId, options);
+    const run = dagController.getRun(runId);
+    if (!run) {
+      throw new BridgeError("run_not_found", `DAG run '${runId}' not found`, false);
+    }
+
+    const session = await this.sessionManager.get(run.sessionId);
+    if (session.status === "closed" || session.status === "closing") {
+      throw new BridgeError("session_closed", `Session ${session.id} is closed`, false);
+    }
+    if (!this.restoreParticipants) {
+      throw new BridgeError(
+        "collaboration_restore_unavailable",
+        "Persisted participant restoration is not configured for P5 DAG resume",
+        false,
+      );
+    }
+
+    const prepared = this.restoreParticipants(persistedParticipants);
+    return dagController.resume(runId, prepared, options);
   }
 
 
