@@ -184,12 +184,15 @@ export async function runBoundedCollaborationDag<T>(
         continue;
       }
 
-      transition(settled.nodeId, "failed");
-      rootAbort.abort(
-        settled.error instanceof Error
-          ? settled.error
-          : new Error(String(settled.error)),
-      );
+      const externallyCancelled = rootAbort.signal.aborted;
+      transition(settled.nodeId, externallyCancelled ? "cancelled" : "failed");
+      if (!externallyCancelled) {
+        rootAbort.abort(
+          settled.error instanceof Error
+            ? settled.error
+            : new Error(String(settled.error)),
+        );
+      }
 
       // Drain siblings so callers never inherit detached execution promises.
       const siblingResults = await Promise.all([...active.values()].map(item => item.promise));
@@ -207,6 +210,14 @@ export async function runBoundedCollaborationDag<T>(
             completionOrder.push(sibling.nodeId);
           }
         }
+      }
+
+      if (externallyCancelled) {
+        throw new BridgeError(
+          "collaboration_dag_cancelled",
+          "Collaboration DAG execution was cancelled",
+          false,
+        );
       }
 
       throw new BridgeError(
