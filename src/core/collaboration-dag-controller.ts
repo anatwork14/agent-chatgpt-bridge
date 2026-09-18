@@ -261,9 +261,7 @@ export class CollaborationDagController {
 
     const settlement = this.executeLoop(
       initialRun,
-      config,
       prepared,
-      graph,
       plan,
       control,
       options,
@@ -364,16 +362,15 @@ export class CollaborationDagController {
 
   private async executeLoop(
     initialRun: RoleBasedCollaborationRun,
-    _config: CollaborationConfig,
     prepared: PreparedRoleParticipants,
-    _graph: CollaborationDagDefinition,
     plan: CollaborationDagExecutionPlan,
     control: ActiveCollaborationDagRunControl,
     options?: CollaborationDagExecutionOptions,
+    initialStatusesByNode?: Readonly<Record<string, import("./collaboration-dag-scheduler").CollaborationDagSchedulerNodeStatus>>,
   ): Promise<CollaborationDagExecutionResult> {
     const clock = options?.clock ?? (() => new Date().toISOString());
     const now = options?.now ?? (() => Date.now());
-    const startedAtMs = now();
+    const startedAtMs = requireValidStartedAt(initialRun, now());
     const initialized = new Set<string>();
     const runtimeByParticipant = new Map<string, ParticipantRuntime>(
       prepared.runtimes.map(runtime => [runtime.participantId, runtime]),
@@ -388,6 +385,7 @@ export class CollaborationDagController {
         maxParallelTurns: initialRun.budget.maxParallelTurns,
         failurePolicy,
         signal: control.rootAbortController.signal,
+        initialStatusesByNode,
         onTransition: transition => {
           const node = plan.nodesById[transition.nodeId]!;
           if (transition.to === "ready") {
@@ -562,7 +560,32 @@ export class CollaborationDagController {
     const turnIdFactory = options?.turnIdFactory ?? generateCollaborationTurnId;
     const messageIdFactory = options?.messageIdFactory ?? generateCollaborationMessageId;
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const persistedNode = this.persistence
+      .getNodes(initialRun.id)
+      .find(item => item.id === node.id);
+    if (!persistedNode) {
+      throw new BridgeError(
+        "persistence_corruption",
+        `DAG node '${node.id}' disappeared before execution`,
+        false,
+      );
+    }
+    let firstAttempt = 1;
+    if (persistedNode.attempt > 0) {
+      firstAttempt =
+        persistedNode.status === "ready" && persistedNode.error?.code === "daemon_restarted"
+          ? persistedNode.attempt
+          : persistedNode.attempt + 1;
+    }
+    if (firstAttempt > maxAttempts) {
+      throw new BridgeError(
+        "collaboration_dag_node_failed",
+        `DAG node '${node.id}' has no bounded attempts remaining`,
+        false,
+      );
+    }
+
+    for (let attempt = firstAttempt; attempt <= maxAttempts; attempt++) {
       if (signal.aborted) {
         throw new BridgeError("collaboration_dag_cancelled", "DAG execution was cancelled", false);
       }
