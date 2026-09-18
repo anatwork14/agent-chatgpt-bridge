@@ -16,6 +16,8 @@ export const COLLABORATION_DAG_AUDIT_EVENT_TYPES = [
   "collaboration.dag.completed",
   "collaboration.dag.failed",
   "collaboration.dag.cancelled",
+  "collaboration.dag.recovered",
+  "collaboration.dag.resumed",
 ] as const;
 
 export type CollaborationDagAuditEventType =
@@ -100,6 +102,22 @@ export interface CollaborationDagAuditPayloadMap {
     readonly nodeCount: number;
     readonly totalAttempts: number;
     readonly cancelledNodeCount: number;
+  };
+  "collaboration.dag.recovered": BasePayload & {
+    readonly recoveryKind: "safe_boundary" | "interrupted_nodes";
+    readonly interruptedNodeCount: number;
+    readonly outcomeStatus:
+      | "paused"
+      | "completed"
+      | "failed"
+      | "cancelled"
+      | "budget_exhausted"
+      | "timed_out";
+  };
+  "collaboration.dag.resumed": BasePayload & {
+    readonly interruptedReplayCount: number;
+    readonly completedNodeCount: number;
+    readonly pendingNodeCount: number;
   };
 }
 
