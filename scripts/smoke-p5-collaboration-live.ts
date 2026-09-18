@@ -203,7 +203,7 @@ async function main(): Promise<void> {
       budget: {
         maxTurns: 8,
         maxParticipants: 4,
-        maxParallelTurns: 2,
+        maxParallelTurns: 1,
         maxRetriesPerParticipant: 1,
         maxWallClockMs: 600_000,
       },
@@ -281,8 +281,8 @@ async function main(): Promise<void> {
           terminal: true,
           instruction: [
             "Read the fan-in predecessor outputs in their supplied deterministic order.",
-            "Verify CRIT_NONCE and IMPL_NONCE are both present.",
-            "Conclude by outputting only this completion block:",
+            "Verify that both CRIT_NONCE and IMPL_NONCE are present.",
+            "Conclude by outputting ONLY the following completion block and NOTHING ELSE (no conversational text, no preamble, no markdown formatting, no text before or after):",
             "<bridge_done>",
             "P5_LIVE_OK",
             "CRIT_NONCE_<value copied from critic>",
@@ -407,7 +407,7 @@ async function main(): Promise<void> {
       budget: {
         maxTurns: 4,
         maxParticipants: 2,
-        maxParallelTurns: 2,
+        maxParallelTurns: 1,
         maxRetriesPerParticipant: 0,
         maxWallClockMs: 600_000,
       },
