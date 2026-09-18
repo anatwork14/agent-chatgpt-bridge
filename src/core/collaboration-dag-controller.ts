@@ -99,14 +99,6 @@ export class CollaborationDagController {
     const runIdFactory = options?.runIdFactory ?? generateRunId;
     const failurePolicy: CollaborationDagFailurePolicy = options?.failurePolicy ?? "fail_fast";
 
-    if (failurePolicy !== "fail_fast") {
-      throw new BridgeError(
-        "unsupported_collaboration_dag_failure_policy",
-        "P5 skip_dependents execution is not enabled until deterministic propagation is integrated",
-        false,
-      );
-    }
-
     const budget: CollaborationDagBudget = {
       ...P5_DEFAULT_BUDGET,
       ...(config.budget ?? {}),
@@ -382,25 +374,59 @@ export class CollaborationDagController {
     );
 
     try {
-      await runBoundedCollaborationDag<CollaborationMessageRecord>(plan, {
+      const failurePolicy: CollaborationDagFailurePolicy = options?.failurePolicy ?? "fail_fast";
+      const schedulerResult = await runBoundedCollaborationDag<CollaborationMessageRecord>(plan, {
         maxParallelTurns: initialRun.budget.maxParallelTurns,
+        failurePolicy,
         signal: control.rootAbortController.signal,
         onTransition: transition => {
-          if (transition.to !== "ready") return;
-          this.persistence.markNodeReady(initialRun.id, transition.nodeId);
           const node = plan.nodesById[transition.nodeId]!;
-          this.emit({
-            eventType: "collaboration.dag.node.ready",
-            runId: initialRun.id,
-            sessionId: initialRun.sessionId,
-            payload: {
-              schemaVersion: 1,
+          if (transition.to === "ready") {
+            this.persistence.markNodeReady(initialRun.id, transition.nodeId);
+            this.emit({
+              eventType: "collaboration.dag.node.ready",
+              runId: initialRun.id,
+              sessionId: initialRun.sessionId,
+              payload: {
+                schemaVersion: 1,
+                nodeId: node.id,
+                participantId: node.participantId,
+                declarationIndex: node.declarationIndex,
+                dependencyCount: node.dependsOn.length,
+              },
+            });
+            return;
+          }
+
+          if (transition.to === "skipped") {
+            const assignment = assignmentByParticipant.get(node.participantId);
+            if (!assignment) {
+              throw new BridgeError(
+                "invalid_collaboration_dag",
+                `Missing role binding for skipped DAG participant '${node.participantId}'`,
+                false,
+              );
+            }
+            const completedAt = clock();
+            this.persistence.markNodeTerminal({
+              runId: initialRun.id,
               nodeId: node.id,
-              participantId: node.participantId,
-              declarationIndex: node.declarationIndex,
-              dependencyCount: node.dependsOn.length,
-            },
-          });
+              status: "skipped",
+              completedAt,
+            });
+            this.emit({
+              eventType: "collaboration.dag.node.skipped",
+              runId: initialRun.id,
+              sessionId: initialRun.sessionId,
+              createdAt: completedAt,
+              payload: {
+                schemaVersion: 1,
+                nodeId: node.id,
+                participantId: node.participantId,
+                roleId: assignment.roleId,
+              },
+            });
+          }
         },
         executeNode: async (node, context) => {
           const runtime = runtimeByParticipant.get(node.participantId);
@@ -431,8 +457,26 @@ export class CollaborationDagController {
       });
 
       const messagesByNode = this.persistence.getMessagesByNode(initialRun.id);
+
+      if (failurePolicy === "skip_dependents" && schedulerResult.failedNodeIds.length > 0) {
+        const completedTerminalNodeIds = plan.nodeIds.filter(nodeId => {
+          const node = plan.nodesById[nodeId]!;
+          return node.terminal && messagesByNode[nodeId] !== undefined;
+        });
+        if (completedTerminalNodeIds.length === 0) {
+          throw new BridgeError(
+            "collaboration_dag_terminal_unreachable",
+            "All declared terminal DAG paths became unreachable after branch failure",
+            false,
+          );
+        }
+      }
+
       let finalSummary = "Collaboration DAG completed";
-      const preferredSinks = [...plan.sinkNodeIds].reverse();
+      const preferredSinks = [
+        ...plan.nodeIds.filter(nodeId => plan.nodesById[nodeId]!.terminal),
+        ...plan.sinkNodeIds,
+      ].reverse();
       for (const sinkId of preferredSinks) {
         const message = messagesByNode[sinkId];
         if (message) {
