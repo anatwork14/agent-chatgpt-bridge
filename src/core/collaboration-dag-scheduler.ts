@@ -25,6 +25,11 @@ export interface CollaborationDagSchedulerOptions<T> {
   readonly maxParallelTurns: number;
   readonly failurePolicy?: CollaborationDagFailurePolicy;
   readonly signal?: AbortSignal;
+  /**
+   * Persisted scheduler state used by P5 resume. Omitted nodes start as pending.
+   * "running" is rejected because startup recovery must reconcile in-flight nodes first.
+   */
+  readonly initialStatusesByNode?: Readonly<Record<string, CollaborationDagSchedulerNodeStatus>>;
   readonly executeNode: (
     node: CollaborationDagPlannedNode,
     context: { readonly signal: AbortSignal },
@@ -80,11 +85,27 @@ export async function runBoundedCollaborationDag<T>(
     options.signal?.addEventListener("abort", onExternalAbort, { once: true });
   }
 
-  const statuses = new Map<string, CollaborationDagSchedulerNodeStatus>(
-    plan.nodeIds.map(id => [id, "pending"]),
-  );
+  const statuses = new Map<string, CollaborationDagSchedulerNodeStatus>();
   const completed = new Set<string>();
   const settledNodes = new Set<string>();
+
+  for (const nodeId of plan.nodeIds) {
+    const status = options.initialStatusesByNode?.[nodeId] ?? "pending";
+    if (status === "running") {
+      throw new BridgeError(
+        "collaboration_dag_recovery_required",
+        `DAG node '${nodeId}' is still running; startup recovery must reconcile it before scheduling`,
+        false,
+      );
+    }
+    statuses.set(nodeId, status);
+    if (status === "completed") {
+      completed.add(nodeId);
+      settledNodes.add(nodeId);
+    } else if (status === "failed" || status === "skipped" || status === "cancelled") {
+      settledNodes.add(nodeId);
+    }
+  }
   const failedNodeIds: string[] = [];
   const skippedNodeIds: string[] = [];
   const activeParticipants = new Set<string>();
