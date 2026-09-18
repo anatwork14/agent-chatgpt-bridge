@@ -1219,6 +1219,7 @@ export class CollaborationDagController {
             priorTurns: assembled.priorTurns,
             dag: {
               nodeId: node.id,
+              instruction: node.instruction,
               dependencyNodeIds: assembled.provenance.predecessorNodeIds,
               predecessorMessageIds: assembled.provenance.predecessorMessageIds,
               attempt,
