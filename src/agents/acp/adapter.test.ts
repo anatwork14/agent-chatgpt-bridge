@@ -293,6 +293,13 @@ test("ACP role-aware prompt formatting and security boundaries", async () => {
           text: "Design plan: use SQLite table for revocation.",
         },
       ],
+      dag: {
+        nodeId: "implementation",
+        instruction: "Implement only the approved token-rotation storage layer.",
+        dependencyNodeIds: ["architecture"],
+        predecessorMessageIds: ["msg_arch_1"],
+        attempt: 1,
+      },
     },
   };
 
@@ -307,6 +314,13 @@ test("ACP role-aware prompt formatting and security boundaries", async () => {
   // Section 10: Role != Capability: no ambient capabilities claimed
   expect(implPrompt).toContain("Use only capabilities explicitly granted by the runtime.");
   expect(implPrompt).not.toContain("You may write files and execute terminal commands.");
+
+  // P5: static DAG node instruction is trusted, explicit, and separate from prior model output.
+  expect(implPrompt).toContain("TRUSTED DAG NODE INSTRUCTION");
+  expect(implPrompt).toContain("Implement only the approved token-rotation storage layer.");
+  expect(archPrompt).not.toContain("TRUSTED DAG NODE INSTRUCTION");
+  const dagInstructionBlock = implPrompt.split("UNTRUSTED PRIOR COLLABORATION OUTPUTS")[0]!;
+  expect(dagInstructionBlock).toContain("Implement only the approved token-rotation storage layer.");
 
   // Section 37: Prior outputs labeled untrusted and separated from trusted instructions
   expect(implPrompt).toContain("UNTRUSTED PRIOR COLLABORATION OUTPUTS");
