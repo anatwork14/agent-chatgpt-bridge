@@ -59,6 +59,8 @@ export interface BridgeRuntime {
   recoveredInterruptedTurns: number;
   /** Number of P4 role-based runs reconciled from 'running' → 'paused' at startup. */
   recoveredRoleBasedRuns: number;
+  /** Number of P5 DAG runs examined and reconciled at startup. */
+  recoveredDagRuns: number;
   close(): Promise<void>;
 }
 
@@ -273,8 +275,10 @@ export async function createBridgeRuntime(
   // P4.6: Reconcile any role-based runs that were left in status=running by the previous
   // daemon instance. This MUST run before any new runs can start.
   let recoveryReport;
+  let dagRecoveryReport;
   try {
     recoveryReport = runController.recoverRoleBasedRuns();
+    dagRecoveryReport = runController.recoverDagRuns();
   } catch (recoveryError) {
     await Promise.allSettled([
       sessionManager.shutdown(),
@@ -284,6 +288,7 @@ export async function createBridgeRuntime(
     throw recoveryError;
   }
   const recoveredRoleBasedRuns = recoveryReport.examined;
+  const recoveredDagRuns = dagRecoveryReport.examined;
 
 
   const apiToken = dependencies.apiToken ?? bridgeApiToken(config);
@@ -356,6 +361,7 @@ export async function createBridgeRuntime(
     baseUrl: `http://${host}:${port}/bridge/v1`,
     recoveredInterruptedTurns,
     recoveredRoleBasedRuns,
+    recoveredDagRuns,
     close,
   };
 
