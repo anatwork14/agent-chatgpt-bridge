@@ -300,6 +300,7 @@ export async function createBridgeRuntime(
     listModels,
     runController,
     listRuns: () => runStore.list(),
+    auditStore,
     requestShutdown: dependencies.requestShutdown,
   });
   const providerHealthApi = createProviderHealthApi({
