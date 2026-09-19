@@ -74,10 +74,12 @@ import type {
   CollaborationDagNodeRecord,
 } from "./collaboration-dag";
 import type { CollaborationDagPersistence } from "./collaboration-dag-persistence";
+import type { BridgeIntegrationCorrelation } from "./integration-contract";
 
 export interface CollaborationDagExecutionOptions extends RoleBasedExecutionOptions {
   readonly budget?: Partial<CollaborationDagBudget>;
   readonly failurePolicy?: CollaborationDagFailurePolicy;
+  readonly correlation?: BridgeIntegrationCorrelation;
 }
 
 export interface ActiveCollaborationDagRunControl {
