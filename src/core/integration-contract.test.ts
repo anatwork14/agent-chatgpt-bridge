@@ -3,6 +3,7 @@ import {
   BRIDGE_INTEGRATION_SCHEMA_VERSION,
   bridgeIntegrationCapabilities,
   createBridgeIntegrationDagRunProjection,
+  normalizeBridgeIntegrationCorrelation,
 } from "./integration-contract";
 import type { RoleBasedCollaborationRun } from "./collaboration-domain";
 import type {
@@ -133,4 +134,35 @@ describe("P6 integration contract", () => {
       expect(serialized).not.toContain(forbidden);
     }
   });
+
+  it("normalizes bounded ARC and CompanyOS correlation identifiers", () => {
+    expect(normalizeBridgeIntegrationCorrelation({
+      arcProjectId: " project-1 ",
+      arcTaskId: "T001",
+      companyWorkflowId: "WF_123",
+      companyStepId: "step:review",
+      externalTraceId: "trace/abc-123",
+    })).toEqual({
+      arcProjectId: "project-1",
+      arcTaskId: "T001",
+      companyWorkflowId: "WF_123",
+      companyStepId: "step:review",
+      externalTraceId: "trace/abc-123",
+    });
+  });
+
+  it("rejects empty, oversized, whitespace-bearing, or arbitrary correlation content", () => {
+    for (const value of [
+      "",
+      "contains spaces",
+      "x".repeat(129),
+      "../unsafe path",
+      "line\nbreak",
+    ]) {
+      expect(() => normalizeBridgeIntegrationCorrelation({
+        externalTraceId: value,
+      })).toThrow();
+    }
+  });
+
 });
