@@ -836,6 +836,22 @@ export class CollaborationDagController {
     return this.persistence.getRun(runId);
   }
 
+  getSnapshot(runId: string): {
+    readonly run: RoleBasedCollaborationRun;
+    readonly metadata: import("./collaboration-dag").CollaborationDagRunMetadata;
+    readonly nodes: readonly import("./collaboration-dag").CollaborationDagNodeRecord[];
+  } | null {
+    const run = this.persistence.getRun(runId);
+    if (!run) return null;
+    const metadata = this.persistence.getMetadata(runId);
+    if (!metadata) return null;
+    return {
+      run,
+      metadata,
+      nodes: this.persistence.getNodes(runId),
+    };
+  }
+
   isDagRun(runId: string): boolean {
     return this.persistence.getMetadata(runId) !== null;
   }
