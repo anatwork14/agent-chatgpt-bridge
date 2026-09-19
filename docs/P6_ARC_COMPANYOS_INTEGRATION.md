@@ -1,7 +1,7 @@
 # P6: ARC / CompanyOS Integration Contract
 
 **Document Version:** 1.0.0  
-**Status:** P6 RELEASE CANDIDATE / FINAL EXACT-HEAD CI REQUIRED  
+**Status:** DONE + CROSS-REPOSITORY SIGN-OFF  
 **Branch:** `feat/p6-arc-companyos-integration`  
 **Tracking Issue:** #11  
 **Baseline:** P5 merge commit `c3338cdeabb1a7fe95ea97231bed97be9be223a6`

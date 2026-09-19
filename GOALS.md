@@ -286,7 +286,7 @@ No uncontrolled recursive agent spawning.
 
 ### P6 — ARC / CompanyOS integration contract
 
-**Status: RELEASE CANDIDATE — FINAL EXACT-HEAD CI GATE**
+**Status: DONE + CROSS-REPOSITORY SIGN-OFF**
 
 Expose Agent Bridge as a versioned intelligence/collaboration service boundary for ARC and CompanyOS without importing execution-plane responsibilities.
 

@@ -1,7 +1,7 @@
 # P6 ARC / CompanyOS Integration Sign-Off
 
 **Phase:** P6  
-**Status:** RELEASE CANDIDATE — merge only after exact-head Bridge CI passes  
+**Status:** FINAL RELEASE RECORD — exact-head release-content CI passed  
 **Tracking:** issue #11 / PR #12  
 **Baseline:** P5 merge `c3338cdeabb1a7fe95ea97231bed97be9be223a6`
 
@@ -145,14 +145,30 @@ Allowed external control is bounded to versioned discovery, idempotent static-DA
 
 ## 7. Final gate
 
-This release-candidate commit intentionally records all P6.0–P6.7 evidence before the final CI run.
+Release-content head:
 
-**Do not merge PR #12 unless:**
+`a7c1d1f385a21d5e6dc4809cd8b9aa453444955f`
 
-1. PR #12 head remains unchanged;
-2. the CI run attached to that exact head passes actionlint, codex-router integration, Ubuntu, macOS, and Windows;
-3. branch divergence remains 0 behind main;
-4. no review/thread blocker appears;
-5. GitHub reports the PR mergeable.
+Exact-head CI run:
 
-The final PR conversation comment records the exact release head, CI run, and merge action.
+`35413912926` — PASS
+
+Matrix:
+
+- actionlint: PASS;
+- codex-router integration: PASS;
+- Ubuntu verify/package/app-smoke: PASS;
+- macOS verify/package/app-smoke: PASS;
+- Windows verify/package/app-smoke: PASS.
+
+Repository state at the release-content gate:
+
+- divergence from `main`: 0 behind / 44 ahead;
+- reviews: 0;
+- unresolved review threads: 0;
+- mergeable: yes;
+- branch protection/rulesets blocking merge: none.
+
+This final documentation-only commit changes release records only. No P6 implementation, schema, persistence, REST/SSE, runtime, or test code changes after the passing release-content head.
+
+PR #12 may merge only if this final documentation head also passes exact-head CI and remains mergeable.

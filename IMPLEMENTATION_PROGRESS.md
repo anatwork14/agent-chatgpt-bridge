@@ -422,3 +422,24 @@ CompanyOS gateway smoke: PASS
 ```
 
 CompanyOS private-repository GitHub-hosted Actions were unavailable before workflow-step execution. Contract and behavioral smoke evidence is therefore exact-head / exact-byte deterministic evidence; no claim of CompanyOS CI success is made.
+
+
+Final P6 release-gate evidence:
+
+```text
+release-content head: a7c1d1f385a21d5e6dc4809cd8b9aa453444955f
+exact-head CI run: 35413912926 PASS
+actionlint: PASS
+codex-router-integration: PASS
+ubuntu verify/package/app-smoke: PASS
+macOS verify/package/app-smoke: PASS
+windows verify/package/app-smoke: PASS
+branch divergence at gate: 0 behind / 44 ahead
+reviews: 0
+unresolved review threads: 0
+mergeable: yes
+```
+
+**P6 DETERMINISTIC SIGN-OFF: YES**
+
+**P6 CROSS-REPOSITORY SIGN-OFF: YES**
