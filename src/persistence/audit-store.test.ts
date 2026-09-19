@@ -149,3 +149,24 @@ test("AuditStore handles legacy events and null payloads gracefully (Section 66)
   expect(list[1]!.eventType).toBe("run.completed");
   expect(list[1]!.payload).toBeUndefined();
 });
+
+
+test("AuditStore replays strictly after the supplied cursor", () => {
+  initDatabase(":memory:");
+  const store = new AuditStore();
+
+  store.log({ eventType: "type.A", runId: "run_cursor", createdAt: "2026-09-19T00:00:00Z" });
+  store.log({ eventType: "type.B", runId: "run_cursor", createdAt: "2026-09-19T00:00:01Z" });
+  store.log({ eventType: "type.C", runId: "run_cursor", createdAt: "2026-09-19T00:00:02Z" });
+
+  const all = store.listByRun("run_cursor");
+  expect(all).toHaveLength(3);
+
+  const replay = store.list({
+    runId: "run_cursor",
+    afterId: all[0]!.id!,
+  });
+  expect(replay.map(event => event.eventType)).toEqual(["type.B", "type.C"]);
+
+  expect(() => store.list({ afterId: -1 })).toThrow(BridgeError);
+});
