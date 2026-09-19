@@ -50,6 +50,22 @@ function contentParts(value: unknown): BridgeContentPart[] {
   return value as BridgeContentPart[];
 }
 
+function waitForPoll(signal: AbortSignal, delayMs: number): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise(resolve => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, delayMs);
+    const abort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      resolve();
+    };
+    signal.addEventListener("abort", abort, { once: true });
+  });
+}
+
 function bridgeStatus(error: BridgeError): number {
   switch (error.code) {
     case "session_not_found":
@@ -163,14 +179,7 @@ export function createBridgeApi(sessionManager: SessionManager, options: BridgeA
         }
 
         if (once) return;
-        await new Promise<void>(resolve => {
-          const timer = setTimeout(resolve, 250);
-          const abort = () => {
-            clearTimeout(timer);
-            resolve();
-          };
-          c.req.raw.signal.addEventListener("abort", abort, { once: true });
-        });
+        await waitForPoll(c.req.raw.signal, 250);
       }
     });
   });
