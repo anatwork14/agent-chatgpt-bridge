@@ -380,9 +380,9 @@ Current slices:
 [x] P6.2 correlation metadata
 [x] P6.3 minimized integration event stream
 [x] P6.4 idempotent external collaboration submission
-[ ] P6.5 ARC integration smoke
-[ ] P6.6 CompanyOS integration smoke
-[ ] P6.7 release sign-off
+[x] P6.5 ARC integration smoke
+[x] P6.6 CompanyOS integration smoke
+[x] P6.7 release sign-off
 ```
 
 Initial implementation intentionally exposes only safe lifecycle/control metadata. It does not expose objectives, prompts, node instructions, model output, provider error messages, commands, cwd, credentials, or environment values.
@@ -395,3 +395,30 @@ Bridge collaboration/session authority -> Agent Bridge
 Company workflow/outcome authority     -> CompanyOS
 cross-system linkage                   -> bounded opaque correlation IDs
 ```
+
+
+### P6 release-candidate evidence
+
+Cross-repository P6 integration evidence:
+
+```text
+Agent Bridge functional head: 397199746912125322850645298f0de43ea0c962
+Agent Bridge CI: 35413007099 PASS
+
+ARC P6.5 PR: #29
+ARC exact smoke head: 9c37f8492f0069bdb9dfc4c5d533c9f1e5ad9831
+ARC CI: 35412712345 PASS (Python 3.11 / 3.12)
+ARC merge commit: 3adc4bfce924d213ad1f676726f3373ef44e1399
+
+CompanyOS P6.6 contract PR: #13
+CompanyOS contract head: 52f60a6ec198e9784e876a6d11f903525d7f00ba
+CompanyOS contract merge: d3b1f4579bcd8f9aadfaf54a46d25ec7cdbf6da0
+
+CompanyOS P6.6 behavior PR: #14
+CompanyOS gateway-smoke head: f3e84c41c8840bdf4a88f9c6c7c653824c21040d
+CompanyOS gateway-smoke merge: 790974b2cb8ecc956da5c64505d8e711e7751de4
+CompanyOS exact smoke blob: 7f71b459e27407b62e4dd7e1e6694df3e6bfda29
+CompanyOS gateway smoke: PASS
+```
+
+CompanyOS private-repository GitHub-hosted Actions were unavailable before workflow-step execution. Contract and behavioral smoke evidence is therefore exact-head / exact-byte deterministic evidence; no claim of CompanyOS CI success is made.

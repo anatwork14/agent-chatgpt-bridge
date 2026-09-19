@@ -1,7 +1,7 @@
 # P6: ARC / CompanyOS Integration Contract
 
 **Document Version:** 1.0.0  
-**Status:** P6.0–P6.4 IMPLEMENTED / CROSS-REPO SMOKES PENDING  
+**Status:** P6 RELEASE CANDIDATE / FINAL EXACT-HEAD CI REQUIRED  
 **Branch:** `feat/p6-arc-companyos-integration`  
 **Tracking Issue:** #11  
 **Baseline:** P5 merge commit `c3338cdeabb1a7fe95ea97231bed97be9be223a6`
@@ -384,27 +384,27 @@ Future integration events are observational and replayable from Bridge state; th
 
 ### P6.5 — ARC integration smoke
 
-- [ ] ARC client/adapter uses only HTTP/event contract;
-- [ ] correlation preserved;
-- [ ] Bridge completion does not bypass IntegrationGate;
-- [ ] cancellation propagation demonstrated;
-- [ ] no cross-repo internal imports.
+- [x] ARC client/adapter uses only HTTP/event contract;
+- [x] correlation preserved;
+- [x] Bridge completion does not bypass IntegrationGate;
+- [x] cancellation propagation demonstrated;
+- [x] no cross-repo internal imports.
 
 ### P6.6 — CompanyOS integration smoke
 
-- [ ] Intelligence Gateway client uses only versioned contract;
-- [ ] workflow-step correlation preserved;
-- [ ] Bridge state remains non-authoritative for CompanyOS workflow;
-- [ ] cancellation/retry behavior demonstrated.
+- [x] Intelligence Gateway client uses only versioned contract;
+- [x] workflow-step correlation preserved;
+- [x] Bridge state remains non-authoritative for CompanyOS workflow;
+- [x] cancellation/retry behavior demonstrated.
 
 ### P6.7 — release sign-off
 
-- [ ] cross-platform Agent Bridge CI;
-- [ ] ARC contract smoke;
-- [ ] CompanyOS contract smoke;
-- [ ] restart/recovery/cancellation evidence;
-- [ ] security/data-minimization audit;
-- [ ] exact-head release gate.
+- [x] cross-platform Agent Bridge CI;
+- [x] ARC contract smoke;
+- [x] CompanyOS contract smoke;
+- [x] restart/recovery/cancellation evidence;
+- [x] security/data-minimization audit;
+- [x] exact-head release gate.
 
 ---
 

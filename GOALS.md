@@ -286,7 +286,7 @@ No uncontrolled recursive agent spawning.
 
 ### P6 — ARC / CompanyOS integration contract
 
-**Status: IN PROGRESS — TRACKING ISSUE #11**
+**Status: RELEASE CANDIDATE — FINAL EXACT-HEAD CI GATE**
 
 Expose Agent Bridge as a versioned intelligence/collaboration service boundary for ARC and CompanyOS without importing execution-plane responsibilities.
 
@@ -298,9 +298,9 @@ Initial slices:
 [x] P6.2 ARC/CompanyOS correlation metadata
 [x] P6.3 minimized integration event stream
 [x] P6.4 idempotent external collaboration submission
-[ ] P6.5 ARC integration smoke
-[ ] P6.6 CompanyOS integration smoke
-[ ] P6.7 recovery/cancellation/correlation release sign-off
+[x] P6.5 ARC integration smoke
+[x] P6.6 CompanyOS integration smoke
+[x] P6.7 recovery/cancellation/correlation release sign-off
 ```
 
 Authority remains explicit:
