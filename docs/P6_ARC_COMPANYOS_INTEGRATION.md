@@ -1,7 +1,7 @@
 # P6: ARC / CompanyOS Integration Contract
 
 **Document Version:** 1.0.0  
-**Status:** P6.0–P6.1 IMPLEMENTED / VALIDATION IN PROGRESS  
+**Status:** P6.0–P6.4 IMPLEMENTED / CROSS-REPO SMOKES PENDING  
 **Branch:** `feat/p6-arc-companyos-integration`  
 **Tracking Issue:** #11  
 **Baseline:** P5 merge commit `c3338cdeabb1a7fe95ea97231bed97be9be223a6`
@@ -359,28 +359,28 @@ Future integration events are observational and replayable from Bridge state; th
 
 ### P6.2 — correlation metadata
 
-- [ ] bounded correlation schema;
-- [ ] persistence;
-- [ ] validation;
-- [ ] projection support;
-- [ ] restart durability tests.
+- [x] bounded correlation schema;
+- [x] persistence;
+- [x] validation;
+- [x] projection support;
+- [x] restart durability tests.
 
 ### P6.3 — integration event stream
 
-- [ ] event envelope;
-- [ ] minimized lifecycle events;
-- [ ] replay cursor;
-- [ ] SSE consumer disconnect isolation;
-- [ ] restart/replay tests.
+- [x] event envelope;
+- [x] minimized lifecycle events;
+- [x] replay cursor;
+- [x] SSE consumer disconnect isolation;
+- [x] restart/replay tests.
 
 ### P6.4 — external collaboration submission
 
-- [ ] versioned request;
-- [ ] idempotency;
-- [ ] participant/profile validation;
-- [ ] P5 static DAG validation reuse;
-- [ ] no credential-bearing fields;
-- [ ] exact run identity response.
+- [x] versioned request;
+- [x] idempotency;
+- [x] participant/profile validation;
+- [x] P5 static DAG validation reuse;
+- [x] no credential-bearing fields;
+- [x] exact run identity response.
 
 ### P6.5 — ARC integration smoke
 
