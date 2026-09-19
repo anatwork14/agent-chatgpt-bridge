@@ -159,7 +159,7 @@ function parseBudget(value: unknown): Partial<CollaborationDagBudget> | undefine
     "maxWallClockMs",
   ], "budget");
 
-  const budget: Partial<CollaborationDagBudget> = {};
+  const budget: Record<string, number> = {};
   const positive = [
     "maxTurns",
     "maxParticipants",
@@ -168,7 +168,7 @@ function parseBudget(value: unknown): Partial<CollaborationDagBudget> | undefine
   ] as const;
   for (const key of positive) {
     const parsed = optionalInteger(record[key], `budget.${key}`, { min: 1 });
-    if (parsed !== undefined) (budget as Record<string, number>)[key] = parsed;
+    if (parsed !== undefined) budget[key] = parsed;
   }
   const retries = optionalInteger(
     record.maxRetriesPerParticipant,
@@ -176,7 +176,7 @@ function parseBudget(value: unknown): Partial<CollaborationDagBudget> | undefine
     { min: 0 },
   );
   if (retries !== undefined) budget.maxRetriesPerParticipant = retries;
-  return budget;
+  return budget as Partial<CollaborationDagBudget>;
 }
 
 function parseCorrelation(value: unknown): BridgeIntegrationCorrelation | undefined {
