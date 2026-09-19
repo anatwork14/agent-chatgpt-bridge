@@ -732,6 +732,10 @@ export class RunController {
     return this.dagController?.getRun(runId) ?? null;
   }
 
+  getDagRunSnapshot(runId: string) {
+    return this.dagController?.getSnapshot(runId) ?? null;
+  }
+
   async cancelDagRun(
     runId: string,
     reason = "Collaboration DAG run was cancelled",
