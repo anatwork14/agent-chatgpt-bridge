@@ -284,6 +284,34 @@ Every node must have:
 
 No uncontrolled recursive agent spawning.
 
+### P6 — ARC / CompanyOS integration contract
+
+**Status: IN PROGRESS — TRACKING ISSUE #11**
+
+Expose Agent Bridge as a versioned intelligence/collaboration service boundary for ARC and CompanyOS without importing execution-plane responsibilities.
+
+Initial slices:
+
+```text
+[x] P6.0 versioned integration domain + capability discovery
+[x] P6.1 safe bearer-authenticated DAG read/cancel boundary
+[ ] P6.2 ARC/CompanyOS correlation metadata
+[ ] P6.3 minimized integration event stream
+[ ] P6.4 idempotent external collaboration submission
+[ ] P6.5 ARC integration smoke
+[ ] P6.6 CompanyOS integration smoke
+[ ] P6.7 recovery/cancellation/correlation release sign-off
+```
+
+Authority remains explicit:
+
+- Agent Bridge owns collaboration/session/provider state.
+- ARC owns task DAGs, isolated workers, Git candidates, and IntegrationGate.
+- CompanyOS owns company workflows, policy, budget, evidence, and outcomes.
+- Integration uses versioned APIs/events; no repository imports another system's scheduler internals.
+
+See `docs/P6_ARC_COMPANYOS_INTEGRATION.md`.
+
 ## Security invariants
 
 1. Bind bridge/provider-control surfaces to loopback by default.
@@ -318,7 +346,7 @@ wrappers               > large upstream browser refactors
 1. Preserve the released P4 role-based collaboration baseline on `main`.
 2. P5 bounded multi-participant collaboration DAG implementation is complete.
 3. P5 real Claude + Antigravity fan-out/fan-in and simultaneous cancellation sign-off is complete.
-4. Merge P5 only after final exact-head CI on the documentation/status-only release-record head.
-5. Integrate upward with ARC/CompanyOS through explicit APIs/events rather than merging execution-plane responsibilities into Agent Bridge.
+4. P5 is released to `main`.
+5. Implement P6 ARC/CompanyOS integration through explicit versioned APIs/events while preserving authority boundaries.
 
 Do not begin a later milestone by weakening an earlier milestone's correctness, security, cancellation, persistence, or audit guarantees.
