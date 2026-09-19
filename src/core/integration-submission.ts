@@ -138,7 +138,7 @@ function optionalInteger(
 ): number | undefined {
   if (value === undefined) return undefined;
   const min = options.min ?? 0;
-  if (!Number.isSafeInteger(value) || (value as number) < min) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min) {
     throw new BridgeError(
       "invalid_request",
       `${path} must be an integer >= ${min}`,
@@ -460,10 +460,14 @@ export function createBridgeIntegrationDagSubmitter(
         .map(node => node.roleId),
     )];
 
-    const {
-      maxParallelTurns: _ignoredParallelism,
-      ...p4Budget
-    } = request.budget ?? {};
+    const p4Budget = request.budget
+      ? {
+          maxTurns: request.budget.maxTurns,
+          maxParticipants: request.budget.maxParticipants,
+          maxRetriesPerParticipant: request.budget.maxRetriesPerParticipant,
+          maxWallClockMs: request.budget.maxWallClockMs,
+        }
+      : {};
     const maxParticipants =
       request.budget?.maxParticipants ?? request.participants.length;
 
