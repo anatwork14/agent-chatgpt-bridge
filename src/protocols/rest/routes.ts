@@ -7,11 +7,14 @@ import type { RunController } from "../../core/run-controller";
 import { BridgeError } from "../../core/errors";
 import type { BridgeContentPart, CollaborationRun, ExternalAgentAdapterConfig } from "../../core/domain";
 import { IdempotencyStore } from "../../persistence/idempotency-store";
+import type { AuditStore } from "../../persistence/audit-store";
 import { executeIdempotent, validateIdempotencyKey } from "./idempotency";
 import {
   bridgeIntegrationCapabilities,
   createBridgeIntegrationDagRunProjection,
 } from "../../core/integration-contract";
+import { COLLABORATION_DAG_AUDIT_EVENT_TYPES } from "../../core/collaboration-dag-audit";
+import { projectBridgeIntegrationEvent } from "../../core/integration-events";
 
 export interface BridgeApiOptions {
   /** Optional local bearer token. Production composition should provide one by default. */
@@ -22,6 +25,7 @@ export interface BridgeApiOptions {
   runController?: RunController;
   listRuns?: () => CollaborationRun[] | Promise<CollaborationRun[]>;
   idempotencyStore?: IdempotencyStore;
+  auditStore?: AuditStore;
   requestShutdown?: () => void;
 }
 
@@ -108,9 +112,67 @@ export function createBridgeApi(sessionManager: SessionManager, options: BridgeA
     return c.json(bridgeIntegrationCapabilities({
       dagRunProjection: enabled,
       dagRunCancellation: enabled,
-      integrationEvents: false,
+      integrationEvents: Boolean(options.auditStore && options.runController),
       dagRunSubmission: false,
     }));
+  });
+
+  app.get("/integrations/events", (c) => {
+    if (!options.auditStore || !options.runController) {
+      throw new BridgeError(
+        "provider_unavailable",
+        "Integration event streaming is not configured",
+        false,
+      );
+    }
+
+    const runId = c.req.query("run_id");
+    const afterRaw = c.req.query("after_id") ?? c.req.header("last-event-id") ?? "0";
+    if (!/^\d+$/.test(afterRaw)) {
+      throw new BridgeError("invalid_request", "after_id must be a non-negative integer", false);
+    }
+    const initialAfterId = Number(afterRaw);
+    if (!Number.isSafeInteger(initialAfterId) || initialAfterId < 0) {
+      throw new BridgeError("invalid_request", "after_id must be a non-negative safe integer", false);
+    }
+    const once = c.req.query("once") === "true";
+
+    return streamSSE(c, async stream => {
+      let cursor = initialAfterId;
+      while (!c.req.raw.signal.aborted) {
+        const records = options.auditStore!.list({
+          runId: runId || undefined,
+          eventTypes: COLLABORATION_DAG_AUDIT_EVENT_TYPES,
+          afterId: cursor,
+          limit: 100,
+        });
+
+        for (const record of records) {
+          cursor = Math.max(cursor, record.id ?? cursor);
+          if (!record.runId) continue;
+          const correlation = options.runController!
+            .getDagRunSnapshot(record.runId)
+            ?.correlation;
+          const projected = projectBridgeIntegrationEvent(record, correlation);
+          if (!projected) continue;
+          await stream.writeSSE({
+            id: String(projected.cursor),
+            event: projected.type,
+            data: JSON.stringify(projected),
+          });
+        }
+
+        if (once) return;
+        await new Promise<void>(resolve => {
+          const timer = setTimeout(resolve, 250);
+          const abort = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+          c.req.raw.signal.addEventListener("abort", abort, { once: true });
+        });
+      }
+    });
   });
 
   app.get("/integrations/dag-runs/:id", (c) => {
