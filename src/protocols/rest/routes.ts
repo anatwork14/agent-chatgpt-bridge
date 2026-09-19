@@ -12,6 +12,7 @@ import { executeIdempotent, validateIdempotencyKey } from "./idempotency";
 import {
   bridgeIntegrationCapabilities,
   createBridgeIntegrationDagRunProjection,
+  type BridgeIntegrationDagRunProjection,
 } from "../../core/integration-contract";
 import { COLLABORATION_DAG_AUDIT_EVENT_TYPES } from "../../core/collaboration-dag-audit";
 import { projectBridgeIntegrationEvent } from "../../core/integration-events";
@@ -26,6 +27,7 @@ export interface BridgeApiOptions {
   listRuns?: () => CollaborationRun[] | Promise<CollaborationRun[]>;
   idempotencyStore?: IdempotencyStore;
   auditStore?: AuditStore;
+  submitIntegrationDag?: (input: unknown) => Promise<BridgeIntegrationDagRunProjection>;
   requestShutdown?: () => void;
 }
 
@@ -129,8 +131,36 @@ export function createBridgeApi(sessionManager: SessionManager, options: BridgeA
       dagRunProjection: enabled,
       dagRunCancellation: enabled,
       integrationEvents: Boolean(options.auditStore && options.runController),
-      dagRunSubmission: false,
+      dagRunSubmission: Boolean(options.submitIntegrationDag),
     }));
+  });
+
+  app.post("/integrations/dag-runs", async (c) => {
+    if (!options.submitIntegrationDag) {
+      throw new BridgeError(
+        "provider_unavailable",
+        "Integration DAG submission is not configured",
+        false,
+      );
+    }
+    const idempotencyKey = validateIdempotencyKey(c.req.header("idempotency-key"));
+    if (!idempotencyKey) {
+      throw new BridgeError(
+        "invalid_request",
+        "Idempotency-Key is required for integration DAG submission",
+        false,
+      );
+    }
+    const body = requireObject(await c.req.json(), "request body");
+    const { value, replayed } = await executeIdempotent(
+      idempotencyStore,
+      "POST:/integrations/dag-runs",
+      idempotencyKey,
+      body,
+      () => options.submitIntegrationDag!(body),
+    );
+    if (replayed) c.header("idempotency-replayed", "true");
+    return c.json(value, 201);
   });
 
   app.get("/integrations/events", (c) => {
