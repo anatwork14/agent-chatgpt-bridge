@@ -244,6 +244,35 @@ test("P5 SQLite persistence creates run, participants, graph metadata, nodes, an
   expect(nodes.find(node => node.id === "review")?.roleId).toBe("reviewer");
 });
 
+test("P6 correlation metadata is persisted atomically with initial DAG creation", () => {
+  const persistence = new SqliteCollaborationDagPersistence();
+  persistence.createInitialDagRun({
+    run: initialRun(),
+    plans,
+    graph,
+    plan,
+    failurePolicy: "fail_fast",
+    correlation: {
+      arcProjectId: "project-1",
+      arcTaskId: "T001",
+      companyWorkflowId: "WF_001",
+      companyStepId: "step:collaborate",
+      externalTraceId: "trace/abc-123",
+    },
+  });
+
+  expect(persistence.getCorrelation(runId)).toEqual({
+    arcProjectId: "project-1",
+    arcTaskId: "T001",
+    arcSessionId: undefined,
+    companyWorkflowId: "WF_001",
+    companyStepId: "step:collaborate",
+    companyRunId: undefined,
+    externalTraceId: "trace/abc-123",
+  });
+});
+
+
 test("P5 SQLite persistence atomically commits canonical output, provenance, participant, and node completion", () => {
   const persistence = new SqliteCollaborationDagPersistence();
   persistence.createInitialDagRun({
