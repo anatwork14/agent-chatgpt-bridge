@@ -7,7 +7,15 @@ import type { RunController } from "../../core/run-controller";
 import { BridgeError } from "../../core/errors";
 import type { BridgeContentPart, CollaborationRun, ExternalAgentAdapterConfig } from "../../core/domain";
 import { IdempotencyStore } from "../../persistence/idempotency-store";
+import type { AuditStore } from "../../persistence/audit-store";
 import { executeIdempotent, validateIdempotencyKey } from "./idempotency";
+import {
+  bridgeIntegrationCapabilities,
+  createBridgeIntegrationDagRunProjection,
+  type BridgeIntegrationDagRunProjection,
+} from "../../core/integration-contract";
+import { COLLABORATION_DAG_AUDIT_EVENT_TYPES } from "../../core/collaboration-dag-audit";
+import { projectBridgeIntegrationEvent } from "../../core/integration-events";
 
 export interface BridgeApiOptions {
   /** Optional local bearer token. Production composition should provide one by default. */
@@ -18,6 +26,8 @@ export interface BridgeApiOptions {
   runController?: RunController;
   listRuns?: () => CollaborationRun[] | Promise<CollaborationRun[]>;
   idempotencyStore?: IdempotencyStore;
+  auditStore?: AuditStore;
+  submitIntegrationDag?: (input: unknown) => Promise<BridgeIntegrationDagRunProjection>;
   requestShutdown?: () => void;
 }
 
@@ -40,6 +50,22 @@ function contentParts(value: unknown): BridgeContentPart[] {
     throw new BridgeError("invalid_request", "content must be a non-empty array", false);
   }
   return value as BridgeContentPart[];
+}
+
+function waitForPoll(signal: AbortSignal, delayMs: number): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise(resolve => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, delayMs);
+    const abort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      resolve();
+    };
+    signal.addEventListener("abort", abort, { once: true });
+  });
 }
 
 function bridgeStatus(error: BridgeError): number {
@@ -98,6 +124,129 @@ export function createBridgeApi(sessionManager: SessionManager, options: BridgeA
   });
 
   app.get("/healthz", (c) => c.json({ status: "ok", service: "agent-chatgpt-bridge" }));
+
+  app.get("/integrations/capabilities", (c) => {
+    const enabled = Boolean(options.runController);
+    return c.json(bridgeIntegrationCapabilities({
+      dagRunProjection: enabled,
+      dagRunCancellation: enabled,
+      integrationEvents: Boolean(options.auditStore && options.runController),
+      dagRunSubmission: Boolean(options.submitIntegrationDag),
+    }));
+  });
+
+  app.post("/integrations/dag-runs", async (c) => {
+    if (!options.submitIntegrationDag) {
+      throw new BridgeError(
+        "provider_unavailable",
+        "Integration DAG submission is not configured",
+        false,
+      );
+    }
+    const idempotencyKey = validateIdempotencyKey(c.req.header("idempotency-key"));
+    if (!idempotencyKey) {
+      throw new BridgeError(
+        "invalid_request",
+        "Idempotency-Key is required for integration DAG submission",
+        false,
+      );
+    }
+    const body = requireObject(await c.req.json(), "request body");
+    const { value, replayed } = await executeIdempotent(
+      idempotencyStore,
+      "POST:/integrations/dag-runs",
+      idempotencyKey,
+      body,
+      () => options.submitIntegrationDag!(body),
+    );
+    if (replayed) c.header("idempotency-replayed", "true");
+    return c.json(value, 201);
+  });
+
+  app.get("/integrations/events", (c) => {
+    if (!options.auditStore || !options.runController) {
+      throw new BridgeError(
+        "provider_unavailable",
+        "Integration event streaming is not configured",
+        false,
+      );
+    }
+
+    const runId = c.req.query("run_id");
+    const afterRaw = c.req.query("after_id") ?? c.req.header("last-event-id") ?? "0";
+    if (!/^\d+$/.test(afterRaw)) {
+      throw new BridgeError("invalid_request", "after_id must be a non-negative integer", false);
+    }
+    const initialAfterId = Number(afterRaw);
+    if (!Number.isSafeInteger(initialAfterId) || initialAfterId < 0) {
+      throw new BridgeError("invalid_request", "after_id must be a non-negative safe integer", false);
+    }
+    const once = c.req.query("once") === "true";
+
+    return streamSSE(c, async stream => {
+      let cursor = initialAfterId;
+      while (!c.req.raw.signal.aborted) {
+        const records = options.auditStore!.list({
+          runId: runId || undefined,
+          eventTypes: COLLABORATION_DAG_AUDIT_EVENT_TYPES,
+          afterId: cursor,
+          limit: 100,
+        });
+
+        for (const record of records) {
+          cursor = Math.max(cursor, record.id ?? cursor);
+          if (!record.runId) continue;
+          const correlation = options.runController!
+            .getDagRunSnapshot(record.runId)
+            ?.correlation;
+          const projected = projectBridgeIntegrationEvent(record, correlation);
+          if (!projected) continue;
+          await stream.writeSSE({
+            id: String(projected.cursor),
+            event: projected.type,
+            data: JSON.stringify(projected),
+          });
+        }
+
+        if (once) return;
+        await waitForPoll(c.req.raw.signal, 250);
+      }
+    });
+  });
+
+  app.get("/integrations/dag-runs/:id", (c) => {
+    if (!options.runController) {
+      throw new BridgeError(
+        "provider_unavailable",
+        "Collaboration DAG integration is not configured",
+        false,
+      );
+    }
+    const snapshot = options.runController.getDagRunSnapshot(c.req.param("id"));
+    if (!snapshot) {
+      throw new BridgeError("run_not_found", `DAG run ${c.req.param("id")} not found`, false);
+    }
+    return c.json(createBridgeIntegrationDagRunProjection(snapshot));
+  });
+
+  app.post("/integrations/dag-runs/:id/cancel", async (c) => {
+    if (!options.runController) {
+      throw new BridgeError(
+        "provider_unavailable",
+        "Collaboration DAG integration is not configured",
+        false,
+      );
+    }
+    const runId = c.req.param("id");
+    if (!options.runController.getDagRunSnapshot(runId)) {
+      throw new BridgeError("run_not_found", `DAG run ${runId} not found`, false);
+    }
+    const cancelled = await options.runController.cancelDagRun(
+      runId,
+      "Cancelled by local integration client",
+    );
+    return c.json({ success: true, cancelled, run_id: runId });
+  });
 
   app.post("/shutdown", (c) => {
     if (!options.requestShutdown) {

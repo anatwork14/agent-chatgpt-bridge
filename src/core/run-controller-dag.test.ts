@@ -639,4 +639,52 @@ describe("P5 RunController DAG orchestration", () => {
     ).toBe(true);
   });
 
+
+  it("persists normalized P6 correlation from DAG execution options", async () => {
+    const architect = new MockAdapter("architect", () => ({ type: "message", content: "ARCH" }));
+    const critic = new MockAdapter("critic", () => ({ type: "message", content: "CRIT" }));
+    const implementer = new MockAdapter("implementer", () => ({ type: "message", content: "IMPL" }));
+    const reviewer = new MockAdapter("reviewer", () => ({ type: "done", summary: "DONE" }));
+
+    const config = baseConfig();
+    const { prepared, byRole } = prepare(config, {
+      architect,
+      critic,
+      implementer,
+      reviewer,
+    });
+    const persistence = new SqliteCollaborationDagPersistence();
+    const { controller: runController } = controller(persistence);
+
+    const result = await runController.executeDagRun(
+      "ses_p5_controller",
+      config,
+      prepared,
+      dag(byRole),
+      {
+        budget: { maxParallelTurns: 2 },
+        correlation: {
+          arcProjectId: " project-1 ",
+          arcTaskId: "T001",
+          companyWorkflowId: "WF_001",
+          companyStepId: "step:collaborate",
+        },
+      },
+    );
+
+    expect(result.run.status).toBe("completed");
+    expect(persistence.getCorrelation(result.run.id)).toEqual({
+      arcProjectId: "project-1",
+      arcTaskId: "T001",
+      arcSessionId: undefined,
+      companyWorkflowId: "WF_001",
+      companyStepId: "step:collaborate",
+      companyRunId: undefined,
+      externalTraceId: undefined,
+    });
+    expect(runController.getDagRunSnapshot(result.run.id)?.correlation).toEqual(
+      persistence.getCorrelation(result.run.id),
+    );
+  });
+
 });

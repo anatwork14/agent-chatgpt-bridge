@@ -18,6 +18,7 @@ import { TurnStore } from "../persistence/turn-store";
 import { SessionManager } from "../core/session-manager";
 import { RunController } from "../core/run-controller";
 import { BridgeError } from "../core/errors";
+import { createBridgeIntegrationDagSubmitter } from "../core/integration-submission";
 import { restorePersistedParticipants } from "../agents/participant-factory";
 
 import type { ConversationProvider } from "../providers/provider";
@@ -293,6 +294,7 @@ export async function createBridgeRuntime(
 
   const apiToken = dependencies.apiToken ?? bridgeApiToken(config);
   const listModels = async () => registry.listModels();
+  const submitIntegrationDag = createBridgeIntegrationDagSubmitter(runController);
   const bridgeApi = createBridgeApi(sessionManager, {
     apiToken,
     defaultProvider,
@@ -300,6 +302,8 @@ export async function createBridgeRuntime(
     listModels,
     runController,
     listRuns: () => runStore.list(),
+    auditStore,
+    submitIntegrationDag,
     requestShutdown: dependencies.requestShutdown,
   });
   const providerHealthApi = createProviderHealthApi({

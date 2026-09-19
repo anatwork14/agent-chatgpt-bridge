@@ -25,7 +25,7 @@ afterEach(() => {
   }
 });
 
-test("Database initializes correctly with legacy, v2, and v3 tables", () => {
+test("Database initializes correctly with legacy, v2, v3, and v4 tables", () => {
   const db = initDatabase(":memory:");
 
   const tablesResult = db.query(`SELECT name FROM sqlite_master WHERE type='table'`).all() as { name: string }[];
@@ -51,16 +51,20 @@ test("Database initializes correctly with legacy, v2, and v3 tables", () => {
   expect(tables).toContain("collaboration_dag_nodes");
   expect(tables).toContain("collaboration_dag_edges");
   expect(tables).toContain("collaboration_dag_inputs");
+  expect(tables).toContain("collaboration_integration_correlations");
+
+  // Migration v4 table
+  expect(tables).toContain("collaboration_integration_correlations");
 
   // Migration version check
   const maxVersion = db.query("SELECT MAX(version) as v FROM schema_migrations").get() as { v: number };
-  expect(maxVersion.v).toBe(3);
+  expect(maxVersion.v).toBe(4);
 
   const countRow = db.query("SELECT COUNT(*) as c FROM schema_migrations").get() as { c: number };
-  expect(countRow.c).toBe(3);
+  expect(countRow.c).toBe(4);
 });
 
-test("Database migration v2 and v3 indexes exist", () => {
+test("Database migration v2, v3, and v4 indexes exist", () => {
   const db = initDatabase(":memory:");
   const indexesResult = db.query(`SELECT name FROM sqlite_master WHERE type='index'`).all() as { name: string }[];
   const indexes = indexesResult.map(i => i.name);
@@ -77,12 +81,14 @@ test("Database migration v2 and v3 indexes exist", () => {
   expect(indexes).toContain("idx_collaboration_dag_nodes_participant");
   expect(indexes).toContain("idx_collaboration_dag_edges_successor");
   expect(indexes).toContain("idx_collaboration_dag_inputs_run");
+  expect(indexes).toContain("idx_collaboration_integration_arc_task");
+  expect(indexes).toContain("idx_collaboration_integration_company_step");
 });
 
 test("Database initializes SQLite :memory: without filesystem setup", () => {
   const db = initDatabase(":memory:");
   const maxVersion = db.query("SELECT MAX(version) as v FROM schema_migrations").get() as { v: number };
-  expect(maxVersion.v).toBe(3);
+  expect(maxVersion.v).toBe(4);
 });
 
 test("Database migration re-open is idempotent", () => {
@@ -92,9 +98,9 @@ test("Database migration re-open is idempotent", () => {
 
   const db2 = initDatabase(testDbPath);
   const maxVersion = db2.query("SELECT MAX(version) as v FROM schema_migrations").get() as { v: number };
-  expect(maxVersion.v).toBe(3);
+  expect(maxVersion.v).toBe(4);
   const countRow = db2.query("SELECT COUNT(*) as c FROM schema_migrations").get() as { c: number };
-  expect(countRow.c).toBe(3);
+  expect(countRow.c).toBe(4);
 });
 
 test("Database foreign keys fail closed on invalid references", () => {
@@ -117,7 +123,7 @@ test("Database foreign keys fail closed on invalid references", () => {
   }).toThrow();
 });
 
-test("Database upgrades cleanly from v1 through v3 preserving legacy data", () => {
+test("Database upgrades cleanly from v1 through v4 preserving legacy data", () => {
   // Construct a database directly with v1 schema only
   const rawDb = new Database(upgradeDbPath);
   rawDb.exec("PRAGMA journal_mode = WAL;");
@@ -216,9 +222,9 @@ test("Database upgrades cleanly from v1 through v3 preserving legacy data", () =
   closeDatabase();
   const upgradedDb = initDatabase(upgradeDbPath);
 
-  // Check version is now 3
+  // Check version is now 4
   const maxVersion = upgradedDb.query("SELECT MAX(version) as v FROM schema_migrations").get() as { v: number };
-  expect(maxVersion.v).toBe(3);
+  expect(maxVersion.v).toBe(4);
 
   // Legacy data intact
   const sessionRow = upgradedDb.query("SELECT * FROM sessions WHERE id = 'ses_v1'").get() as any;

@@ -15,6 +15,7 @@ import type {
 import type { ParticipantAssignmentPlan } from "./participant-assignment";
 import type { CollaborationMessageRecord } from "./collaboration-transcript";
 import type { PersistedParticipant } from "./collaboration-persistence";
+import type { BridgeIntegrationCorrelation } from "./integration-contract";
 
 export interface CollaborationDagPersistence {
   createInitialDagRun(params: {
@@ -23,6 +24,7 @@ export interface CollaborationDagPersistence {
     readonly graph: CollaborationDagDefinition;
     readonly plan: CollaborationDagExecutionPlan;
     readonly failurePolicy: CollaborationDagFailurePolicy;
+    readonly correlation?: BridgeIntegrationCorrelation;
   }): void;
 
   markNodeReady(runId: string, nodeId: string): void;
@@ -71,6 +73,7 @@ export interface CollaborationDagPersistence {
   listRunsByStatuses(statuses: readonly string[]): RoleBasedCollaborationRun[];
   getRun(runId: string): RoleBasedCollaborationRun | null;
   getMetadata(runId: string): CollaborationDagRunMetadata | null;
+  getCorrelation(runId: string): BridgeIntegrationCorrelation | undefined;
   getNodes(runId: string): CollaborationDagNodeRecord[];
   getInputs(runId: string, nodeId?: string): PersistedCollaborationDagInput[];
   getTranscript(runId: string): CollaborationMessageRecord[];

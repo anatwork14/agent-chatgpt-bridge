@@ -4,6 +4,7 @@ import { CollaborationParticipantStore } from "./collaboration-participant-store
 import { CollaborationTurnStore } from "./collaboration-turn-store";
 import { CollaborationMessageStore } from "./collaboration-message-store";
 import { CollaborationDagStore } from "./collaboration-dag-store";
+import { IntegrationCorrelationStore } from "./integration-correlation-store";
 import type { CollaborationDagPersistence } from "../core/collaboration-dag-persistence";
 import type {
   CollaborationDagNodeRecord,
@@ -28,6 +29,7 @@ export class SqliteCollaborationDagPersistence implements CollaborationDagPersis
     private readonly turnStore = new CollaborationTurnStore(),
     private readonly messageStore = new CollaborationMessageStore(),
     private readonly dagStore = new CollaborationDagStore(),
+    private readonly correlationStore = new IntegrationCorrelationStore(),
   ) {}
 
   createInitialDagRun(params: Parameters<CollaborationDagPersistence["createInitialDagRun"]>[0]): void {
@@ -50,6 +52,13 @@ export class SqliteCollaborationDagPersistence implements CollaborationDagPersis
         maxParallelTurns: params.run.budget.maxParallelTurns,
         roleIdByParticipant,
       });
+      if (params.correlation) {
+        this.correlationStore.create(
+          params.run.id,
+          params.correlation,
+          params.run.createdAt,
+        );
+      }
     })();
   }
 
@@ -225,6 +234,10 @@ export class SqliteCollaborationDagPersistence implements CollaborationDagPersis
 
   getMetadata(runId: string): CollaborationDagRunMetadata | null {
     return this.dagStore.getMetadata(runId);
+  }
+
+  getCorrelation(runId: string) {
+    return this.correlationStore.get(runId);
   }
 
   getNodes(runId: string): CollaborationDagNodeRecord[] {

@@ -13,7 +13,8 @@ P2 provider health / explicit routing policy DONE + CI VALIDATED
 P3 native ACP external-agent adapter          IMPLEMENTED + CI GREEN + LIVE SIGN-OFF COMPLETE
 P3 real ACP interoperability                  DONE + LIVE SIGN-OFF
 P4 role-based collaboration                   DONE + LIVE SIGN-OFF
-P5 bounded collaboration DAG                  IN PROGRESS
+P5 bounded collaboration DAG                  DONE + LIVE SIGN-OFF
+P6 ARC / CompanyOS integration contract       IN PROGRESS
 ```
 
 The active consolidation branch is `release/p3-hardening`. It connects the previously orphaned feature-stack history to `main` with a two-parent integration commit while preserving the complete P1 -> P2 -> P3 ancestry. The older stacked PRs remain available as implementation history until the consolidation PR is accepted.
@@ -359,3 +360,86 @@ CI run on same implementation head: 35404281425 PASS
 **P5 DETERMINISTIC SIGN-OFF: YES**
 
 **P5 LIVE SIGN-OFF: YES**
+
+
+## P6 — ARC / CompanyOS integration contract
+
+P6 started from the released P5 merge commit `c3338cdeabb1a7fe95ea97231bed97be9be223a6`.
+
+Tracking:
+
+- issue #11;
+- branch `feat/p6-arc-companyos-integration`;
+- specification `docs/P6_ARC_COMPANYOS_INTEGRATION.md`.
+
+Current slices:
+
+```text
+[x] P6.0 versioned integration domain + capability discovery
+[x] P6.1 safe DAG run projection + exact cancellation REST surface
+[x] P6.2 correlation metadata
+[x] P6.3 minimized integration event stream
+[x] P6.4 idempotent external collaboration submission
+[x] P6.5 ARC integration smoke
+[x] P6.6 CompanyOS integration smoke
+[x] P6.7 release sign-off
+```
+
+Initial implementation intentionally exposes only safe lifecycle/control metadata. It does not expose objectives, prompts, node instructions, model output, provider error messages, commands, cwd, credentials, or environment values.
+
+The P6 authority boundary is:
+
+```text
+ARC task / candidate authority         -> ARC
+Bridge collaboration/session authority -> Agent Bridge
+Company workflow/outcome authority     -> CompanyOS
+cross-system linkage                   -> bounded opaque correlation IDs
+```
+
+
+### P6 release-candidate evidence
+
+Cross-repository P6 integration evidence:
+
+```text
+Agent Bridge functional head: 397199746912125322850645298f0de43ea0c962
+Agent Bridge CI: 35413007099 PASS
+
+ARC P6.5 PR: #29
+ARC exact smoke head: 9c37f8492f0069bdb9dfc4c5d533c9f1e5ad9831
+ARC CI: 35412712345 PASS (Python 3.11 / 3.12)
+ARC merge commit: 3adc4bfce924d213ad1f676726f3373ef44e1399
+
+CompanyOS P6.6 contract PR: #13
+CompanyOS contract head: 52f60a6ec198e9784e876a6d11f903525d7f00ba
+CompanyOS contract merge: d3b1f4579bcd8f9aadfaf54a46d25ec7cdbf6da0
+
+CompanyOS P6.6 behavior PR: #14
+CompanyOS gateway-smoke head: f3e84c41c8840bdf4a88f9c6c7c653824c21040d
+CompanyOS gateway-smoke merge: 790974b2cb8ecc956da5c64505d8e711e7751de4
+CompanyOS exact smoke blob: 7f71b459e27407b62e4dd7e1e6694df3e6bfda29
+CompanyOS gateway smoke: PASS
+```
+
+CompanyOS private-repository GitHub-hosted Actions were unavailable before workflow-step execution. Contract and behavioral smoke evidence is therefore exact-head / exact-byte deterministic evidence; no claim of CompanyOS CI success is made.
+
+
+Final P6 release-gate evidence:
+
+```text
+release-content head: a7c1d1f385a21d5e6dc4809cd8b9aa453444955f
+exact-head CI run: 35413912926 PASS
+actionlint: PASS
+codex-router-integration: PASS
+ubuntu verify/package/app-smoke: PASS
+macOS verify/package/app-smoke: PASS
+windows verify/package/app-smoke: PASS
+branch divergence at gate: 0 behind / 44 ahead
+reviews: 0
+unresolved review threads: 0
+mergeable: yes
+```
+
+**P6 DETERMINISTIC SIGN-OFF: YES**
+
+**P6 CROSS-REPOSITORY SIGN-OFF: YES**

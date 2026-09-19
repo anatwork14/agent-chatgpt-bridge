@@ -15,6 +15,7 @@ export interface AuditListOptions {
   runId?: string;
   sessionId?: string;
   eventTypes?: readonly string[];
+  afterId?: number;
   limit?: number;
 }
 
@@ -51,6 +52,13 @@ export class AuditStore {
       const placeholders = options.eventTypes.map(() => "?").join(", ");
       conditions.push(`event_type IN (${placeholders})`);
       params.push(...options.eventTypes);
+    }
+    if (options?.afterId !== undefined) {
+      if (!Number.isSafeInteger(options.afterId) || options.afterId < 0) {
+        throw new BridgeError("invalid_request", "afterId must be a non-negative safe integer", false);
+      }
+      conditions.push("id > ?");
+      params.push(options.afterId);
     }
 
     let query = "SELECT id, event_type, session_id, turn_id, run_id, payload_json, created_at FROM audit_events";

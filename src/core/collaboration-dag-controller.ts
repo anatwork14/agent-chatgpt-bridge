@@ -56,6 +56,7 @@ import {
 import { BridgeError } from "./errors";
 import { deriveCollaborationDagPersistedState } from "./collaboration-dag-recovery";
 import type { PersistedParticipant } from "./collaboration-persistence";
+import { normalizeBridgeIntegrationCorrelation } from "./integration-contract";
 
 function retryableError(error: unknown): boolean {
   if (error instanceof BridgeError) return error.retryable;
@@ -730,6 +731,7 @@ export class CollaborationDagController {
         graph,
         plan,
         failurePolicy,
+        correlation: normalizeBridgeIntegrationCorrelation(options?.correlation),
       });
     } catch (error) {
       if (error instanceof BridgeError) throw error;
@@ -834,6 +836,24 @@ export class CollaborationDagController {
 
   getRun(runId: string): RoleBasedCollaborationRun | null {
     return this.persistence.getRun(runId);
+  }
+
+  getSnapshot(runId: string): {
+    readonly run: RoleBasedCollaborationRun;
+    readonly metadata: import("./collaboration-dag").CollaborationDagRunMetadata;
+    readonly correlation?: import("./integration-contract").BridgeIntegrationCorrelation;
+    readonly nodes: readonly import("./collaboration-dag").CollaborationDagNodeRecord[];
+  } | null {
+    const run = this.persistence.getRun(runId);
+    if (!run) return null;
+    const metadata = this.persistence.getMetadata(runId);
+    if (!metadata) return null;
+    return {
+      run,
+      metadata,
+      correlation: this.persistence.getCorrelation(runId),
+      nodes: this.persistence.getNodes(runId),
+    };
   }
 
   isDagRun(runId: string): boolean {
