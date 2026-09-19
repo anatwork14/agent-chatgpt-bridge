@@ -13,7 +13,8 @@ P2 provider health / explicit routing policy DONE + CI VALIDATED
 P3 native ACP external-agent adapter          IMPLEMENTED + CI GREEN + LIVE SIGN-OFF COMPLETE
 P3 real ACP interoperability                  DONE + LIVE SIGN-OFF
 P4 role-based collaboration                   DONE + LIVE SIGN-OFF
-P5 bounded collaboration DAG                  IN PROGRESS
+P5 bounded collaboration DAG                  DONE + LIVE SIGN-OFF
+P6 ARC / CompanyOS integration contract       IN PROGRESS
 ```
 
 The active consolidation branch is `release/p3-hardening`. It connects the previously orphaned feature-stack history to `main` with a two-parent integration commit while preserving the complete P1 -> P2 -> P3 ancestry. The older stacked PRs remain available as implementation history until the consolidation PR is accepted.
@@ -359,3 +360,38 @@ CI run on same implementation head: 35404281425 PASS
 **P5 DETERMINISTIC SIGN-OFF: YES**
 
 **P5 LIVE SIGN-OFF: YES**
+
+
+## P6 — ARC / CompanyOS integration contract
+
+P6 started from the released P5 merge commit `c3338cdeabb1a7fe95ea97231bed97be9be223a6`.
+
+Tracking:
+
+- issue #11;
+- branch `feat/p6-arc-companyos-integration`;
+- specification `docs/P6_ARC_COMPANYOS_INTEGRATION.md`.
+
+Current slices:
+
+```text
+[x] P6.0 versioned integration domain + capability discovery
+[x] P6.1 safe DAG run projection + exact cancellation REST surface
+[ ] P6.2 correlation metadata
+[ ] P6.3 minimized integration event stream
+[ ] P6.4 idempotent external collaboration submission
+[ ] P6.5 ARC integration smoke
+[ ] P6.6 CompanyOS integration smoke
+[ ] P6.7 release sign-off
+```
+
+Initial implementation intentionally exposes only safe lifecycle/control metadata. It does not expose objectives, prompts, node instructions, model output, provider error messages, commands, cwd, credentials, or environment values.
+
+The P6 authority boundary is:
+
+```text
+ARC task / candidate authority         -> ARC
+Bridge collaboration/session authority -> Agent Bridge
+Company workflow/outcome authority     -> CompanyOS
+cross-system linkage                   -> bounded opaque correlation IDs
+```
