@@ -377,9 +377,9 @@ Current slices:
 ```text
 [x] P6.0 versioned integration domain + capability discovery
 [x] P6.1 safe DAG run projection + exact cancellation REST surface
-[ ] P6.2 correlation metadata
-[ ] P6.3 minimized integration event stream
-[ ] P6.4 idempotent external collaboration submission
+[x] P6.2 correlation metadata
+[x] P6.3 minimized integration event stream
+[x] P6.4 idempotent external collaboration submission
 [ ] P6.5 ARC integration smoke
 [ ] P6.6 CompanyOS integration smoke
 [ ] P6.7 release sign-off
