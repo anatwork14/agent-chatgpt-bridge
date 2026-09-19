@@ -77,4 +77,28 @@ describe("P6 integration event projection", () => {
       payload: { schemaVersion: 1, nodeCount: 1, totalAttempts: 1 },
     })).toBeNull();
   });
+
+  it("renames internal recovery outcomeStatus to external runStatus", () => {
+    const projected = projectBridgeIntegrationEvent({
+      id: 77,
+      eventType: "collaboration.dag.recovered",
+      runId: "rrun_recovered",
+      sessionId: "ses_recovered",
+      createdAt: "2026-09-19T04:30:00.000Z",
+      payload: {
+        schemaVersion: 1,
+        recoveryKind: "safe_boundary",
+        interruptedNodeCount: 0,
+        outcomeStatus: "completed",
+      },
+    });
+
+    expect(projected?.data).toEqual({
+      recoveryKind: "safe_boundary",
+      interruptedNodeCount: 0,
+      runStatus: "completed",
+    });
+    expect(JSON.stringify(projected)).not.toContain('"outcomeStatus"');
+  });
+
 });
