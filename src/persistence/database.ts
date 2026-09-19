@@ -376,4 +376,36 @@ function runMigrations(database: Database): void {
     })();
   }
 
+  if (currentVersion < 4) {
+    database.transaction(() => {
+      database.exec(`
+        CREATE TABLE collaboration_integration_correlations (
+          run_id TEXT PRIMARY KEY,
+          schema_version INTEGER NOT NULL,
+          arc_project_id TEXT,
+          arc_task_id TEXT,
+          arc_session_id TEXT,
+          company_workflow_id TEXT,
+          company_step_id TEXT,
+          company_run_id TEXT,
+          external_trace_id TEXT,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY(run_id) REFERENCES role_based_runs(id) ON DELETE CASCADE
+        );
+      `);
+
+      database.exec(`
+        CREATE INDEX idx_collaboration_integration_arc_task
+        ON collaboration_integration_correlations(arc_project_id, arc_task_id);
+      `);
+
+      database.exec(`
+        CREATE INDEX idx_collaboration_integration_company_step
+        ON collaboration_integration_correlations(company_workflow_id, company_step_id);
+      `);
+
+      database.exec("INSERT INTO schema_migrations (version) VALUES (4);");
+    })();
+  }
+
 }
