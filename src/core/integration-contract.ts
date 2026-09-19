@@ -10,6 +10,56 @@ import type {
 } from "./collaboration-dag";
 
 export const BRIDGE_INTEGRATION_SCHEMA_VERSION = 1 as const;
+export const BRIDGE_INTEGRATION_CORRELATION_MAX_LENGTH = 128;
+
+export interface BridgeIntegrationCorrelation {
+  readonly arcProjectId?: string;
+  readonly arcTaskId?: string;
+  readonly arcSessionId?: string;
+  readonly companyWorkflowId?: string;
+  readonly companyStepId?: string;
+  readonly companyRunId?: string;
+  readonly externalTraceId?: string;
+}
+
+const CORRELATION_FIELDS = [
+  "arcProjectId",
+  "arcTaskId",
+  "arcSessionId",
+  "companyWorkflowId",
+  "companyStepId",
+  "companyRunId",
+  "externalTraceId",
+] as const satisfies readonly (keyof BridgeIntegrationCorrelation)[];
+
+function normalizeCorrelationId(field: string, value: string): string {
+  const normalized = value.normalize("NFC").trim();
+  if (
+    !normalized ||
+    normalized.length > BRIDGE_INTEGRATION_CORRELATION_MAX_LENGTH ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/@+\-]*$/.test(normalized)
+  ) {
+    throw new Error(
+      `${field} must be a 1-${BRIDGE_INTEGRATION_CORRELATION_MAX_LENGTH} character opaque identifier using only safe identifier characters`,
+    );
+  }
+  return normalized;
+}
+
+export function normalizeBridgeIntegrationCorrelation(
+  correlation: BridgeIntegrationCorrelation | undefined,
+): BridgeIntegrationCorrelation | undefined {
+  if (!correlation) return undefined;
+  const normalized: Record<string, string> = {};
+  for (const field of CORRELATION_FIELDS) {
+    const value = correlation[field];
+    if (value === undefined) continue;
+    normalized[field] = normalizeCorrelationId(field, value);
+  }
+  return Object.keys(normalized).length > 0
+    ? normalized as BridgeIntegrationCorrelation
+    : undefined;
+}
 
 export interface BridgeIntegrationCapabilities {
   readonly schemaVersion: typeof BRIDGE_INTEGRATION_SCHEMA_VERSION;
@@ -56,6 +106,7 @@ export interface BridgeIntegrationDagRunProjection {
   readonly createdAt: string;
   readonly startedAt?: string;
   readonly completedAt?: string;
+  readonly correlation?: BridgeIntegrationCorrelation;
   readonly nodes: readonly BridgeIntegrationDagNodeProjection[];
 }
 
@@ -88,6 +139,7 @@ export function createBridgeIntegrationDagRunProjection(params: {
   readonly run: RoleBasedCollaborationRun;
   readonly metadata: CollaborationDagRunMetadata;
   readonly nodes: readonly CollaborationDagNodeRecord[];
+  readonly correlation?: BridgeIntegrationCorrelation;
 }): BridgeIntegrationDagRunProjection {
   const nodes = [...params.nodes]
     .sort((a, b) => a.declarationIndex - b.declarationIndex || a.id.localeCompare(b.id))
@@ -122,6 +174,7 @@ export function createBridgeIntegrationDagRunProjection(params: {
     createdAt: params.run.createdAt,
     startedAt: params.run.startedAt,
     completedAt: params.run.completedAt,
+    correlation: params.correlation,
     nodes,
   };
 }
