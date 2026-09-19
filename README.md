@@ -101,6 +101,39 @@ tasks / experiments / recovery / evidence
 
 Read [`docs/security-model.md`](docs/security-model.md) before enabling tool-capable workflows.
 
+## Install
+
+### Bun — recommended
+
+The npm package is `agent-chatgpt-bridge`. Bun is the runtime and package manager used by the project.
+
+```bash
+bun add -g agent-chatgpt-bridge
+agent-chatgpt --help
+```
+
+### npm
+
+npm can install the same package globally, but Bun 1.4.0 or newer must still be available on `PATH` because the CLI is Bun-native.
+
+```bash
+npm install -g agent-chatgpt-bridge
+agent-chatgpt --help
+```
+
+Each GitHub Release also includes the exact npm package tarball, standalone runtime archives, desktop installers, and `checksums.txt`. This keeps the package installable from the release even before npm registry propagation.
+
+### Standalone release
+
+The release workflow publishes signed/packaged artifacts for macOS, Linux, and Windows. The bundled installers resolve this repository's latest public release and verify SHA-256 checksums before installation.
+
+```bash
+# macOS / Linux desktop launcher
+curl -fsSL https://github.com/anatwork14/agent-chatgpt-bridge/releases/latest/download/install-launcher.sh | sh
+```
+
+On Windows, download `install-launcher.ps1` from the latest GitHub Release and run it from PowerShell after reviewing the script.
+
 ## Development setup
 
 The source runtime requires Bun 1.4.0.
@@ -248,10 +281,11 @@ P1 core + codex-router provider plane        DONE + LIVE SIGN-OFF
 P2 provider health / explicit routing       DONE + CI VALIDATED
 P3 native ACP external-agent adapter        DONE + LIVE SIGN-OFF
 P4 role-based collaboration                 DONE + LIVE SIGN-OFF
-P5 bounded multi-participant DAG            IN PROGRESS
+P5 bounded multi-participant DAG            DONE + LIVE SIGN-OFF
+P6 ARC / CompanyOS integration contract     DONE + RELEASED
 ```
 
-See [`IMPLEMENTATION_PROGRESS.md`](IMPLEMENTATION_PROGRESS.md) for evidence and sequencing, and [`docs/P5_BOUNDED_COLLABORATION_DAG.md`](docs/P5_BOUNDED_COLLABORATION_DAG.md) for the active P5 contract.
+See [`IMPLEMENTATION_PROGRESS.md`](IMPLEMENTATION_PROGRESS.md), [`docs/P5_BOUNDED_COLLABORATION_DAG.md`](docs/P5_BOUNDED_COLLABORATION_DAG.md), and [`docs/P6_INTEGRATION_SIGNOFF.md`](docs/P6_INTEGRATION_SIGNOFF.md) for the release evidence.
 
 ## Architecture and implementation references
 
