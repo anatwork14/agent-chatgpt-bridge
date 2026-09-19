@@ -1,3 +1,4 @@
+import { BridgeError } from "./errors";
 import type {
   RoleBasedCollaborationRun,
   RoleBasedCollaborationRunStatus,
@@ -39,8 +40,10 @@ function normalizeCorrelationId(field: string, value: string): string {
     normalized.length > BRIDGE_INTEGRATION_CORRELATION_MAX_LENGTH ||
     !/^[A-Za-z0-9][A-Za-z0-9._:/@+\-]*$/.test(normalized)
   ) {
-    throw new Error(
+    throw new BridgeError(
+      "invalid_request",
       `${field} must be a 1-${BRIDGE_INTEGRATION_CORRELATION_MAX_LENGTH} character opaque identifier using only safe identifier characters`,
+      false,
     );
   }
   return normalized;
