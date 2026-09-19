@@ -5,6 +5,7 @@ import { closeDatabase, initDatabase } from "../../persistence/database";
 import { MessageStore } from "../../persistence/message-store";
 import { SessionStore } from "../../persistence/session-store";
 import { TurnStore } from "../../persistence/turn-store";
+import { AuditStore } from "../../persistence/audit-store";
 import { createBridgeApi } from "./routes";
 
 function sessionManager(): SessionManager {
@@ -217,4 +218,102 @@ describe("P6 integration REST contract", () => {
     const response = await app.request("/bridge/v1/integrations/dag-runs/missing");
     expect(response.status).toBe(404);
   });
+
+  it("replays minimized integration events over authenticated SSE with cursor semantics", async () => {
+    initDatabase(":memory:");
+    const auditStore = new AuditStore();
+    auditStore.log({
+      eventType: "collaboration.dag.node.started",
+      runId: "rrun_p6",
+      sessionId: "ses_p6",
+      createdAt: "2026-09-19T01:00:00.000Z",
+      payload: {
+        schemaVersion: 1,
+        nodeId: "review",
+        participantId: "part_review",
+        roleId: "reviewer",
+        attempt: 1,
+        turnIndex: 3,
+        prompt: "SECRET PROMPT MUST NOT LEAK",
+      },
+    });
+    auditStore.log({
+      eventType: "collaboration.dag.node.completed",
+      runId: "rrun_p6",
+      sessionId: "ses_p6",
+      createdAt: "2026-09-19T01:00:01.000Z",
+      payload: {
+        schemaVersion: 1,
+        nodeId: "review",
+        participantId: "part_review",
+        roleId: "reviewer",
+        attempt: 1,
+        decisionType: "done",
+        durationMs: 25,
+        content: "SECRET MODEL OUTPUT MUST NOT LEAK",
+      },
+    });
+    auditStore.log({
+      eventType: "provider.route",
+      runId: "rrun_p6",
+      sessionId: "ses_p6",
+      createdAt: "2026-09-19T01:00:02.000Z",
+      payload: { provider: "SECRET PROVIDER INTERNAL" },
+    });
+
+    const auditEvents = auditStore.listByRun("rrun_p6");
+    const firstCursor = auditEvents[0]!.id!;
+
+    const app = createBridgeApi(sessionManager(), {
+      apiToken: "local-secret",
+      auditStore,
+      runController: {
+        getDagRunSnapshot: (id: string) => id === "rrun_p6"
+          ? {
+              run: { id },
+              metadata: {},
+              nodes: [],
+              correlation: {
+                arcProjectId: "project-1",
+                arcTaskId: "T001",
+                companyWorkflowId: "WF_001",
+                companyStepId: "step:review",
+              },
+            }
+          : null,
+        cancelDagRun: async () => false,
+      } as any,
+    });
+
+    const unauthorized = await app.request(
+      "/bridge/v1/integrations/events?once=true&run_id=rrun_p6",
+    );
+    expect(unauthorized.status).toBe(401);
+
+    const response = await app.request(
+      `/bridge/v1/integrations/events?once=true&run_id=rrun_p6&after_id=${firstCursor}`,
+      {
+        headers: { authorization: "Bearer local-secret" },
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+
+    const body = await response.text();
+    expect(body).toContain("event: bridge.integration.node.completed");
+    expect(body).not.toContain("event: bridge.integration.node.started");
+    expect(body).not.toContain("provider.route");
+    expect(body).toContain('"arcProjectId":"project-1"');
+    expect(body).toContain('"companyStepId":"step:review"');
+    expect(body).toContain('"decisionType":"done"');
+
+    for (const forbidden of [
+      "SECRET PROMPT MUST NOT LEAK",
+      "SECRET MODEL OUTPUT MUST NOT LEAK",
+      "SECRET PROVIDER INTERNAL",
+    ]) {
+      expect(body).not.toContain(forbidden);
+    }
+  });
+
 });
