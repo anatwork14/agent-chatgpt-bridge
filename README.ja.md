@@ -101,6 +101,41 @@ tasks / experiments / recovery / evidence
 
 ツール対応ワークフローを有効にする前に [`docs/security-model.md`](docs/security-model.md) を確認してください。
 
+## インストール
+
+### Bun — 推奨
+
+npm パッケージ名は `agent-chatgpt-bridge` です。Bun はこのプロジェクトのランタイム兼パッケージマネージャーです。
+
+```bash
+bun add -g agent-chatgpt-bridge
+agent-chatgpt --help
+```
+
+### npm
+
+npm でも同じパッケージをグローバルインストールできますが、CLI は Bun ネイティブのため、`PATH` 上に Bun 1.4.0 が必要です。
+
+```bash
+npm install -g agent-chatgpt-bridge
+agent-chatgpt --help
+```
+
+各 GitHub Release には、同一の npm パッケージ tarball、スタンドアロンランタイム、デスクトップインストーラー、`checksums.txt` も含まれます。
+
+### スタンドアロンリリース
+
+リリースワークフローは macOS、Linux、Windows 向けのパッケージを生成します。インストーラーはこのリポジトリの最新公開リリースを解決し、インストール前に SHA-256 を検証します。
+
+```bash
+# macOS / Linux desktop launcher
+curl -fsSL https://github.com/anatwork14/agent-chatgpt-bridge/releases/latest/download/install-launcher.sh | sh
+```
+
+Windows では最新 GitHub Release から `install-launcher.ps1` を取得し、内容を確認したうえで PowerShell から実行してください。
+
+P6 のクロスリポジトリリリース証拠は [`docs/P6_INTEGRATION_SIGNOFF.md`](docs/P6_INTEGRATION_SIGNOFF.md) にあります。
+
 ## 開発セットアップ
 
 ソースランタイムには Bun 1.4.0 が必要です。

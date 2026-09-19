@@ -69,6 +69,44 @@ jobs:
         run: command -v xvfb-run || (sudo apt-get update && sudo apt-get install -y xvfb)
       - run: bun run app:smoke
 
+
+  package-distribution:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: bun install --frozen-lockfile
+      - name: Pack npm distribution
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          pack_json="$(npm pack --json)"
+          printf '%s\n' "$pack_json" > npm-pack.json
+          tarball="$(jq -r '.[0].filename' npm-pack.json)"
+          test -f "$tarball"
+          jq -r '.[0].files[].path' npm-pack.json | grep -Fx 'src/cli.ts'
+          jq -r '.[0].files[].path' npm-pack.json | grep -Fx 'src/cli/index.ts'
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+      - name: Smoke install package with Bun
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_dir="$(mktemp -d)"
+          printf '{"private":true}\n' > "$smoke_dir/package.json"
+          cd "$smoke_dir"
+          bun add "$GITHUB_WORKSPACE/${{ steps.pack.outputs.tarball }}"
+          ./node_modules/.bin/agent-chatgpt --help >/dev/null
+          ./node_modules/.bin/agent-chatgpt-bridge --help >/dev/null
+          ./node_modules/.bin/codex-chatgpt-web --help >/dev/null
+
   codex-router-integration:
     runs-on: ubuntu-latest
     steps:

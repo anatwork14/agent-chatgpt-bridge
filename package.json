@@ -1,7 +1,7 @@
 {
-  "name": "codex-chatgpt-web",
+  "name": "agent-chatgpt-bridge",
   "version": "5.0.6",
-  "private": true,
+  "private": false,
   "description": "Local provider-agnostic AI collaboration runtime with persistent sessions, routing, bounded workflows, ChatGPT Web, codex-router, and ACP agent adapters.",
   "repository": {
     "type": "git",
@@ -14,14 +14,17 @@
   "packageManager": "bun@1.4.0",
   "type": "module",
   "bin": {
-    "codex-chatgpt-web": "./src/cli.ts",
-    "agent-chatgpt": "./src/cli/index.ts"
+    "agent-chatgpt": "./src/cli/index.ts",
+    "agent-chatgpt-bridge": "./src/cli.ts",
+    "codex-chatgpt-web": "./src/cli.ts"
   },
   "files": [
-    "dist",
+    "src",
+    "assets",
     "README.md",
     "LICENSE",
-    "LICENSES"
+    "LICENSES",
+    "UPSTREAM_BASELINE"
   ],
   "scripts": {
     "start": "bun run src/cli.ts serve",
@@ -95,5 +98,10 @@
     "responses-api",
     "multi-agent"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "preferGlobal": true,
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
 }

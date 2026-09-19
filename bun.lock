@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "codex-chatgpt-web",
+      "name": "agent-chatgpt-bridge",
       "dependencies": {
         "@agentclientprotocol/sdk": "1.4.0",
         "@modelcontextprotocol/sdk": "^1.30.0",
