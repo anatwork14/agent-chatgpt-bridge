@@ -136,7 +136,11 @@ function projectedData(
       typeof value === "number" ||
       typeof value === "boolean"
     ) {
-      data[field] = value;
+      const externalField =
+        eventType === "collaboration.dag.recovered" && field === "outcomeStatus"
+          ? "runStatus"
+          : field;
+      data[externalField] = value;
     }
   }
   return data;
