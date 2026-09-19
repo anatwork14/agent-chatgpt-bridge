@@ -316,4 +316,91 @@ describe("P6 integration REST contract", () => {
     }
   });
 
+
+  it("requires idempotency for external DAG submission and replays the safe projection once", async () => {
+    initDatabase(":memory:");
+    let calls = 0;
+    const submitIntegrationDag = async (_input: unknown) => {
+      calls++;
+      return {
+        schemaVersion: 1 as const,
+        kind: "collaboration_dag_run" as const,
+        id: "rrun_submit_1",
+        sessionId: "ses_existing_1",
+        status: "running" as const,
+        failurePolicy: "fail_fast" as const,
+        maxParallelTurns: 2,
+        participantCount: 2,
+        nodeCount: 2,
+        createdAt: "2026-09-19T02:00:00.000Z",
+        correlation: {
+          arcProjectId: "project-1",
+          arcTaskId: "T001",
+        },
+        nodes: [],
+      };
+    };
+
+    const app = createBridgeApi(sessionManager(), {
+      submitIntegrationDag,
+    });
+    const body = {
+      schemaVersion: 1,
+      sessionId: "ses_existing_1",
+      objective: "SECRET REQUEST OBJECTIVE",
+      participants: [],
+      graph: { version: 1, nodes: [] },
+    };
+
+    const missingKey = await app.request("/bridge/v1/integrations/dag-runs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    expect(missingKey.status).toBe(400);
+    expect(calls).toBe(0);
+
+    const first = await app.request("/bridge/v1/integrations/dag-runs", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "arc:T001:collaboration",
+      },
+      body: JSON.stringify(body),
+    });
+    expect(first.status).toBe(201);
+    expect(first.headers.get("idempotency-replayed")).toBeNull();
+    const firstPayload = await first.json();
+    expect(firstPayload.id).toBe("rrun_submit_1");
+    expect(JSON.stringify(firstPayload)).not.toContain("SECRET REQUEST OBJECTIVE");
+    expect(calls).toBe(1);
+
+    const replay = await app.request("/bridge/v1/integrations/dag-runs", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "arc:T001:collaboration",
+      },
+      body: JSON.stringify(body),
+    });
+    expect(replay.status).toBe(201);
+    expect(replay.headers.get("idempotency-replayed")).toBe("true");
+    expect(await replay.json()).toEqual(firstPayload);
+    expect(calls).toBe(1);
+
+    const conflict = await app.request("/bridge/v1/integrations/dag-runs", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "arc:T001:collaboration",
+      },
+      body: JSON.stringify({
+        ...body,
+        objective: "different objective",
+      }),
+    });
+    expect(conflict.status).toBe(409);
+    expect(calls).toBe(1);
+  });
+
 });
