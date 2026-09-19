@@ -101,6 +101,41 @@ tasks / experiments / recovery / evidence
 
 启用具备工具能力的工作流前，请阅读 [`docs/security-model.md`](docs/security-model.md)。
 
+## 安装
+
+### Bun — 推荐
+
+npm 包名为 `agent-chatgpt-bridge`。项目使用 Bun 作为运行时和包管理器。
+
+```bash
+bun add -g agent-chatgpt-bridge
+agent-chatgpt --help
+```
+
+### npm
+
+npm 也可以全局安装同一个包，但由于 CLI 原生运行于 Bun，`PATH` 中仍需要可用的 Bun 1.4.0。
+
+```bash
+npm install -g agent-chatgpt-bridge
+agent-chatgpt --help
+```
+
+每个 GitHub Release 还会包含完全一致的 npm 包 tarball、独立运行时归档、桌面安装程序和 `checksums.txt`。
+
+### 独立发行版
+
+发布工作流为 macOS、Linux 和 Windows 生成打包产物。安装脚本会解析此仓库的最新公开发行版，并在安装前验证 SHA-256。
+
+```bash
+# macOS / Linux desktop launcher
+curl -fsSL https://github.com/anatwork14/agent-chatgpt-bridge/releases/latest/download/install-launcher.sh | sh
+```
+
+Windows 用户可从最新 GitHub Release 获取 `install-launcher.ps1`，检查脚本后在 PowerShell 中运行。
+
+P6 跨仓库发行证据记录在 [`docs/P6_INTEGRATION_SIGNOFF.md`](docs/P6_INTEGRATION_SIGNOFF.md)。
+
 ## 开发环境
 
 源码运行时要求 Bun 1.4.0。
