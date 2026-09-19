@@ -1,6 +1,6 @@
 # Implementation Progress
 
-Last updated: 2026-09-18
+Last updated: 2026-09-19
 
 This file is evidence-based. A milestone is not marked live-complete only because unit tests or CI pass.
 
@@ -14,10 +14,10 @@ P3 native ACP external-agent adapter          IMPLEMENTED + CI GREEN + LIVE SIGN
 P3 real ACP interoperability                  DONE + LIVE SIGN-OFF
 P4 role-based collaboration                   DONE + LIVE SIGN-OFF
 P5 bounded collaboration DAG                  DONE + LIVE SIGN-OFF
-P6 ARC / CompanyOS integration contract       IN PROGRESS
+P6 ARC / CompanyOS integration contract       DONE + RELEASED
 ```
 
-The active consolidation branch is `release/p3-hardening`. It connects the previously orphaned feature-stack history to `main` with a two-parent integration commit while preserving the complete P1 -> P2 -> P3 ancestry. The older stacked PRs remain available as implementation history until the consolidation PR is accepted.
+P6 merged to `main` through PR #12 after exact-head cross-platform CI and cross-repository ARC / CompanyOS release sign-off. Public distribution is handled by the versioned GitHub Release and npm/Bun packaging workflow.
 
 ## Completed foundation
 
