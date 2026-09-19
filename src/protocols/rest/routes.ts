@@ -8,6 +8,10 @@ import { BridgeError } from "../../core/errors";
 import type { BridgeContentPart, CollaborationRun, ExternalAgentAdapterConfig } from "../../core/domain";
 import { IdempotencyStore } from "../../persistence/idempotency-store";
 import { executeIdempotent, validateIdempotencyKey } from "./idempotency";
+import {
+  bridgeIntegrationCapabilities,
+  createBridgeIntegrationDagRunProjection,
+} from "../../core/integration-contract";
 
 export interface BridgeApiOptions {
   /** Optional local bearer token. Production composition should provide one by default. */
@@ -98,6 +102,50 @@ export function createBridgeApi(sessionManager: SessionManager, options: BridgeA
   });
 
   app.get("/healthz", (c) => c.json({ status: "ok", service: "agent-chatgpt-bridge" }));
+
+  app.get("/integrations/capabilities", (c) => {
+    const enabled = Boolean(options.runController);
+    return c.json(bridgeIntegrationCapabilities({
+      dagRunProjection: enabled,
+      dagRunCancellation: enabled,
+      integrationEvents: false,
+      dagRunSubmission: false,
+    }));
+  });
+
+  app.get("/integrations/dag-runs/:id", (c) => {
+    if (!options.runController) {
+      throw new BridgeError(
+        "provider_unavailable",
+        "Collaboration DAG integration is not configured",
+        false,
+      );
+    }
+    const snapshot = options.runController.getDagRunSnapshot(c.req.param("id"));
+    if (!snapshot) {
+      throw new BridgeError("run_not_found", `DAG run ${c.req.param("id")} not found`, false);
+    }
+    return c.json(createBridgeIntegrationDagRunProjection(snapshot));
+  });
+
+  app.post("/integrations/dag-runs/:id/cancel", async (c) => {
+    if (!options.runController) {
+      throw new BridgeError(
+        "provider_unavailable",
+        "Collaboration DAG integration is not configured",
+        false,
+      );
+    }
+    const runId = c.req.param("id");
+    if (!options.runController.getDagRunSnapshot(runId)) {
+      throw new BridgeError("run_not_found", `DAG run ${runId} not found`, false);
+    }
+    const cancelled = await options.runController.cancelDagRun(
+      runId,
+      "Cancelled by local integration client",
+    );
+    return c.json({ success: true, cancelled, run_id: runId });
+  });
 
   app.post("/shutdown", (c) => {
     if (!options.requestShutdown) {
